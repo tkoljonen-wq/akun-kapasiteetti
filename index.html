@@ -106,6 +106,14 @@
   .ev .meta { font-size: 13px; color: var(--muted); }
   .ev.excluded .cap { color: var(--muted); }
   .ev .btns .btn { flex: 0 0 auto; }
+  .chg { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 4px; }
+  .chg button {
+    display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 56px;
+    font: inherit; font-weight: 600; color: var(--muted); background: var(--card2);
+    border: 2px solid var(--border); border-radius: 12px; cursor: pointer;
+  }
+  .chg button svg { width: 22px; height: 22px; }
+  .chg button.active { color: #062014; background: var(--accent); border-color: var(--accent); }
   .inline { display: flex; gap: 8px; }
   .inline input { flex: 1; min-width: 0; }
   .inline .btn { flex: 0 0 auto; }
@@ -191,6 +199,11 @@
     <form class="card" id="evForm" autocomplete="off">
       <h2 id="evFormTitle">Uusi lataus</h2>
       <input type="hidden" id="evId">
+      <input type="hidden" id="evCharger">
+      <div class="chg" id="evChargerSeg" role="radiogroup" aria-label="Laturi">
+        <button type="button" role="radio" data-v="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11 12 3l9 8"/><path d="M5 10v10h14V10"/><path d="M12.5 11 10 15h4l-2.5 4"/></svg>Kotilaturi</button>
+        <button type="button" role="radio" data-v="dc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>Pikalaturi</button>
+      </div>
       <div class="row">
         <div><label for="evDate">Päivämäärä</label><input type="date" id="evDate" required></div>
         <div><label for="evKm">Km-lukema</label><input type="number" id="evKm" inputmode="numeric" min="0" step="1" required></div>
@@ -201,21 +214,14 @@
       </div>
       <label for="evKwh">Ladattu energia (kWh)</label>
       <input type="number" id="evKwh" inputmode="decimal" min="0" step="any" required>
-      <label for="evCharger">Laturi</label>
-      <select id="evCharger">
-        <option value="home">Kotilaturi (AC)</option>
-        <option value="ac">Julkinen AC</option>
-        <option value="dc">DC-pikalaturi</option>
-        <option value="">Ei tiedossa</option>
-      </select>
       <label for="evTemp">Ulkolämpötila, 6 h keskiarvo (°C, valinnainen)</label>
       <div class="inline">
         <input type="number" id="evTemp" inputmode="decimal" step="any" placeholder="–">
         <button class="btn" type="button" id="evTempBtn">Hae</button>
       </div>
       <p class="hint" id="evTempHint" hidden></p>
-      <label for="evNote">Huomio (valinnainen)</label>
-      <input type="text" id="evNote" maxlength="200" placeholder="esim. lämmin talli, esilämmitys">
+      <label for="evNote">Muistiinpanot (valinnainen)</label>
+      <input type="text" id="evNote" maxlength="200" placeholder="esim. latauspaikka, lämmin talli, esilämmitys">
       <div class="preview" id="evPreview">Täytä tiedot, niin kapasiteetti lasketaan.</div>
       <p class="hint" id="evStartHint">Voit tallentaa alkutiedot (päivämäärä, km-lukema ja varaus ennen) heti latauksen alussa ja täydentää loput, kun lataus on valmis.</p>
       <button class="btn primary block" type="submit" id="evSave">Tallenna lataus</button>
@@ -382,7 +388,8 @@
     var b = (n * sxy - sx * sy) / den; return { slope: b, intercept: (sy - b * sx) / n };
   }
   // ---------- Malli: kapasiteetti = a + b·km + c·min(T−15,0) + laturivakio ----------
-  var CHARGERS = { home: 'Kotilaturi (AC)', ac: 'Julkinen AC', dc: 'DC-pikalaturi' };
+  var CHARGERS = { home: 'Kotilaturi', ac: 'Julkinen AC', dc: 'Pikalaturi' };
+  var CHARGER_ALIASES = { 'Kotilaturi (AC)': 'home', 'DC-pikalaturi': 'dc' };
   function chargerName(k) { return CHARGERS[k] || 'Laturi ei tiedossa'; }
   function lcFirst(t) { return /^.[A-ZÄÖ]/.test(t) ? t : t.charAt(0).toLowerCase() + t.slice(1); }
   function chg(e) { return CHARGERS[e.charger] ? e.charger : ''; }
@@ -776,11 +783,11 @@
     var le = lastEvent(); $('evKm').placeholder = le ? 'edellinen ' + le.km : '';
     $('evFormTitle').textContent = 'Uusi lataus'; $('evSave').textContent = 'Tallenna lataus';
     $('evCancel').hidden = true;
-    $('evCharger').value = CHARGERS[prefs.lastCharger] || prefs.lastCharger === '' ? prefs.lastCharger : 'home';
+    setCharger(prefs.lastCharger === 'dc' ? 'dc' : 'home');
     var pd = data.pending;
     if (pd) {
       $('evDate').value = pd.date; $('evKm').value = pd.km; $('evBefore').value = pd.socBefore; $('evNote').value = pd.note || '';
-      if (typeof pd.charger === 'string') $('evCharger').value = pd.charger;
+      if (typeof pd.charger === 'string') setCharger(pd.charger);
       $('evFormTitle').textContent = 'Lataus käynnissä – syötä lopputiedot';
       $('evSave').textContent = 'Tallenna valmis lataus';
     }
@@ -790,6 +797,16 @@
     if (wSettings().mode !== 'off') fillTemp(false);
     if (pd) setTimeout(function () { $('evAfter').focus(); }, 50);
   }
+  // Laturivalinta painikkeilla; vanhoissa latauksissa voi olla myös 'ac' tai tyhjä, jolloin kumpaakaan ei ole valittu.
+  function setCharger(v) {
+    $('evCharger').value = v;
+    document.querySelectorAll('#evChargerSeg button').forEach(function (b) {
+      var on = b.dataset.v === v; b.classList.toggle('active', on); b.setAttribute('aria-checked', on);
+    });
+  }
+  document.querySelectorAll('#evChargerSeg button').forEach(function (b) {
+    b.addEventListener('click', function () { setCharger(b.dataset.v); });
+  });
   function setPendingUi(pending, editing) {
     $('evStart').hidden = pending || editing;
     $('evStartHint').hidden = pending || editing;
@@ -853,7 +870,7 @@
     $('evId').value = e.id; $('evDate').value = e.date; $('evKm').value = e.km;
     $('evBefore').value = e.socBefore; $('evAfter').value = e.socAfter; $('evKwh').value = e.kwh; $('evNote').value = e.note || '';
     $('evTemp').value = typeof e.temp === 'number' ? e.temp : ''; tempReq++; showTempHint('');
-    $('evCharger').value = chg(e);
+    setCharger(chg(e));
     $('evFormTitle').textContent = 'Muokkaa latausta'; $('evSave').textContent = 'Tallenna muutokset'; $('evCancel').hidden = false;
     setPendingUi(false, true);
     updatePreview(); show('add');
@@ -967,6 +984,7 @@
   }
   function chargerKey(label) {
     label = String(label || '').trim();
+    if (CHARGER_ALIASES[label]) return CHARGER_ALIASES[label];
     for (var k in CHARGERS) if (CHARGERS[k] === label || k === label) return k;
     return '';
   }
