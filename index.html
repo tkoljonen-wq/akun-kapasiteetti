@@ -526,8 +526,8 @@
         '<div class="main"><div>' + esc(fmtDate(e.date)) + ' · ' + fmt(e.km, 0) + ' km</div>' +
         '<div class="meta">' + fmt(e.socBefore, 0) + ' → ' + fmt(e.socAfter, 0) + ' % · ' + fmt(e.kwh, 2) + ' kWh' + (ok ? '' : ' · ei trendiin') + '</div>' +
         (e.note ? '<div class="meta">' + esc(e.note) + '</div>' : '') +
-        '<div class="btns" style="margin-top:6px"><button class="btn small" data-edit="' + e.id + '">Muokkaa</button>' +
-        '<button class="btn small" data-del="' + e.id + '" style="color:var(--danger)">Poista</button></div></div>' +
+        '<div class="btns" style="margin-top:6px"><button class="btn small" data-edit="' + esc(e.id) + '">Muokkaa</button>' +
+        '<button class="btn small" data-del="' + esc(e.id) + '" style="color:var(--danger)">Poista</button></div></div>' +
         '<div class="cap">' + fmt(c, 1) + '<small>kWh' + (nc ? ' · ' + fmt(c / nc * 100, 0) + ' %' : '') + '</small></div></div>';
     }).join('');
   }
@@ -604,12 +604,24 @@
       return importCsv(txt);
     }).catch(function (e) { toast('Tuonti epäonnistui: ' + e.message); });
   });
+  // Tuodut kentät tarkistetaan ja tyypitetään; id luodaan aina uudelleen.
+  function cleanEvent(e) {
+    if (!e || typeof e !== 'object') return null;
+    var o = { id: uid(), date: String(e.date || ''), km: num(e.km), socBefore: num(e.socBefore),
+      socAfter: num(e.socAfter), kwh: num(e.kwh), note: String(e.note || '').slice(0, 200) };
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(o.date) || !isFinite(o.km) || !(o.socBefore >= 0 && o.socAfter <= 100 && o.socAfter > o.socBefore) || !(o.kwh > 0)) return null;
+    return o;
+  }
   function importJson(txt) {
     var o = JSON.parse(txt), d = o.data || o;
     if (!d.car || !Array.isArray(d.events)) throw new Error('tuntematon tiedosto');
     return confirmBox('Korvataanko nykyiset tiedot varmuuskopiolla (' + d.events.length + ' latausta)?').then(function (ok) {
       if (!ok) return;
-      data = { car: Object.assign(emptyData().car, d.car), events: d.events.map(function (e) { return Object.assign({ id: uid() }, e); }) };
+      var c = d.car || {}, cap = num(c.capacityNew), md = parseInt(c.minDelta, 10);
+      data = {
+        car: { name: String(c.name || '').slice(0, 60), capacityNew: cap > 0 ? cap : null, minDelta: md >= 1 && md <= 100 ? md : 20 },
+        events: d.events.map(cleanEvent).filter(Boolean)
+      };
       save(); fillCar(); toast('Tiedot palautettu'); show('summary');
     });
   }
