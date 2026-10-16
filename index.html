@@ -106,6 +106,11 @@
   .ev .meta { font-size: 13px; color: var(--muted); }
   .ev.excluded .cap { color: var(--muted); }
   .ev .btns .btn { flex: 0 0 auto; }
+  h3.sub { font-size: 14px; margin: 18px 0 6px; color: var(--text); }
+  table.sim { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  table.sim th { text-align: left; color: var(--muted); font-weight: 600; padding: 6px 4px; border-bottom: 1px solid var(--border); }
+  table.sim td { padding: 7px 4px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  table.sim td.r, table.sim th.r { text-align: right; white-space: nowrap; }
   .chg { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 4px; }
   .chg button {
     display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 56px;
@@ -214,6 +219,13 @@
         <span><i style="background:var(--muted)"></i>Ei trendiin</span>
         <span><i style="background:var(--accent)"></i>Trendi</span>
       </div>
+      <h3 class="sub">Samankaltaisten ajojen vertailu</h3>
+      <p class="hint" style="margin-top:0">Jokaista ajoa verrataan aiempiin ajoihin, joiden keskilämpötila on ±3 °C ja keskinopeus ±7 km/h sisällä ja joiden välillä on ajettu vähintään 1 000 km. Toimintamatkan muutos näistä pareista kertoo kulumisesta ilman oletuksia lämpötilan tai nopeuden vaikutuksen muodosta.</p>
+      <div class="stats" style="margin-top:8px">
+        <div class="stat big"><div class="v" id="simTrend" style="font-size:21px">–</div><div class="l">Muutos / 10 000 km samankaltaisten ajojen pareista</div></div>
+      </div>
+      <p class="hint" id="simInfo"></p>
+      <div id="simTable"></div>
       <p class="hint">Toimintamatka (km 100 %:n varauksella) = ajettu matka ÷ käytetty varaus × 100. Kun lämpötilan ja nopeuden vaikutus vakioidaan, toimintamatkan pieneneminen kertoo kapasiteetin pienenemisestä. Arvio lasketaan erillään latauksiin perustuvasta arviosta.</p>
     </div>
     <div class="btns">
@@ -1041,6 +1053,72 @@
     var base = m ? m.a + m.b * m.odo0 : NaN;
     return { ds: ds, valid: valid, scope: scope, range: wsum ? rsum / wsum : NaN, base: base, m: m, info: f.info, corrected: !!(m && (m.useT || m.useS)) };
   }
+  // ---------- Samankaltaisten ajojen vertailu (luokan sisäinen trendi) ----------
+  var TEMP_BINS = [[-Infinity, 0, '< 0 °C'], [0, 10, '0–10 °C'], [10, 20, '10–20 °C'], [20, Infinity, '> 20 °C']];
+  var SPEED_BINS = [[0, 50, '< 50 km/h'], [50, 80, '50–80 km/h'], [80, Infinity, '> 80 km/h']];
+  function binIdx(bins, v) { for (var i = 0; i < bins.length; i++) if (v >= bins[i][0] && v < bins[i][1]) return i; return -1; }
+  function classOf(d) {
+    if (!hasTemp(d) || !(d.speed > 0)) return null;
+    var ti = binIdx(TEMP_BINS, d.temp), si = binIdx(SPEED_BINS, d.speed);
+    return { key: ti * 10 + si, label: TEMP_BINS[ti][2] + ' · ' + SPEED_BINS[si][2] };
+  }
+  var PAIR_DT = 3, PAIR_DV = 7, PAIR_MIN_KM = 1000;
+  // Parit: samankaltaiset olosuhteet, riittävä km-väli. Kulmakerroin b = Σw·Δy·Δx / Σw·Δx².
+  function pairSlope(items, skip) {
+    var sxy = 0, sxx = 0, wy = 0, w0 = 0, npairs = 0, used = {};
+    for (var i = 0; i < items.length; i++) {
+      if (i === skip) continue;
+      for (var j = i + 1; j < items.length; j++) {
+        if (j === skip) continue;
+        var a = items[i], b = items[j], dx = b.odo - a.odo;
+        if (Math.abs(dx) < PAIR_MIN_KM || Math.abs(a.temp - b.temp) > PAIR_DT || Math.abs(a.speed - b.speed) > PAIR_DV) continue;
+        var w = Math.min(dDelta(a), dDelta(b));
+        sxy += w * dx * (rangeOf(b) - rangeOf(a)); sxx += w * dx * dx;
+        wy += w * (rangeOf(a) + rangeOf(b)) / 2; w0 += w; npairs++; used[i] = used[j] = 1;
+      }
+    }
+    return { b: sxx > 0 ? sxy / sxx : NaN, meanR: w0 ? wy / w0 : NaN, pairs: npairs, drives: Object.keys(used).length };
+  }
+  function similarDrives(valid) {
+    var items = valid.filter(function (d) { return hasTemp(d) && d.speed > 0; });
+    var r = pairSlope(items, -1);
+    var res = { pairs: r.pairs, drives: r.drives, n: items.length, pct: NaN, pctSe: NaN, groups: [] };
+    if (isFinite(r.b) && r.drives >= 4) {
+      res.pct = r.b * 10000 / r.meanR * 100;
+      // Keskivirhe jackknifella (pois yksi ajo kerrallaan), koska parit eivät ole toisistaan riippumattomia
+      var vals = [];
+      items.forEach(function (_, k) { var q = pairSlope(items, k); if (isFinite(q.b)) vals.push(q.b * 10000 / q.meanR * 100); });
+      if (vals.length >= 3) {
+        var m = vals.reduce(function (s, v) { return s + v; }, 0) / vals.length;
+        res.pctSe = Math.sqrt((vals.length - 1) / vals.length * vals.reduce(function (s, v) { return s + (v - m) * (v - m); }, 0));
+      }
+    }
+    // Yleiskuva olosuhteittain
+    var groups = {};
+    items.forEach(function (d) {
+      var c = classOf(d);
+      var g = groups[c.key] = groups[c.key] || { key: c.key, label: c.label, n: 0, w: 0, sy: 0, last: null };
+      g.n++; g.w += dDelta(d); g.sy += dDelta(d) * rangeOf(d); g.last = d;
+    });
+    res.groups = Object.keys(groups).map(function (k) { var g = groups[k]; g.mean = g.sy / g.w; return g; }).sort(function (a, b) { return a.key - b.key; });
+    return res;
+  }
+  function renderSimilar(valid) {
+    var r = similarDrives(valid);
+    if (isFinite(r.pct)) {
+      $('simTrend').textContent = (r.pct > 0 ? '+' : '') + fmt(r.pct, 1) + ' %' + (isFinite(r.pctSe) ? ' (± ' + fmt(r.pctSe, 1) + ')' : '');
+      $('simInfo').textContent = r.pairs + ' vertailuparia ' + r.drives + ' ajosta.' + (isFinite(r.pctSe) && Math.abs(r.pct) < 2 * r.pctSe ? ' Muutos ei ole vielä erotettavissa satunnaisvaihtelusta.' : '');
+    } else {
+      $('simTrend').textContent = 'kerätään dataa';
+      $('simInfo').textContent = 'Tulos lasketaan, kun samankaltaisia ajoja on vähintään neljä (nyt ' + r.drives + ' ajoa ' + r.pairs + ' parissa). Ajot ilman lämpötilatietoa eivät ole mukana. Säännöllisesti toistuvat matkat, kuten työmatka, kerryttävät pareja nopeimmin.';
+    }
+    if (!r.groups.length) { $('simTable').innerHTML = ''; return; }
+    $('simTable').innerHTML = '<table class="sim"><thead><tr><th>Olosuhteet</th><th class="r">Ajoja</th><th class="r">Toim.matka ka</th><th class="r">Viimeisin</th></tr></thead><tbody>' +
+      r.groups.map(function (g) {
+        return '<tr><td>' + esc(g.label) + '</td><td class="r">' + g.n + '</td><td class="r">' + fmt(g.mean, 0) + ' km</td><td class="r">' + fmt(rangeOf(g.last), 0) + ' km</td></tr>';
+      }).join('') + '</tbody></table>';
+  }
+
   function renderDriveSummary() {
     var a = analyzeDrives(), m = a.m, t = a.info.t, sp = a.info.s;
     var refTxt = [m && m.useT ? '+15 °C' : '', m && m.useS ? REF_SPEED + ' km/h' : ''].filter(Boolean).join(', ');
@@ -1078,6 +1156,7 @@
       mi.push('Nopeuskorjaus otetaan käyttöön, kun ajoja on vähintään ' + S_MIN_N + ' (nyt ' + sp.n + ') ja keskinopeudet vaihtelevat vähintään ' + S_MIN_RANGE + ' km/h (nyt ' + fmt(sp.range, 0) + ' km/h).');
     }
     $('dModel').textContent = mi.join(' ');
+    renderSimilar(a.valid);
     $('dlgRaw').hidden = !a.corrected;
     $('dlgNorm').lastChild.textContent = a.corrected ? 'Vakioitu' : 'Ajo';
     var isDate = chartMode === 'date';
@@ -1310,10 +1389,10 @@
   }
   function driveCsvText() {
     var f = csvFmt(), n = f.n, a = analyzeDrives();
-    var rows = [['Päivämäärä', 'Matkamittari alussa', 'Varaus alussa %', 'Varaus lopussa %', 'Ajettu km', 'Keskinopeus km/h', 'Käytetty %-yks', 'Toimintamatka 100 % km', 'Trendiin', 'Muistiinpanot', 'Lämpötila alussa °C', 'Lämpötila lopussa °C', 'Keskilämpötila °C', 'Vakioitu toimintamatka km'].join(f.sep)];
+    var rows = [['Päivämäärä', 'Matkamittari alussa', 'Varaus alussa %', 'Varaus lopussa %', 'Ajettu km', 'Keskinopeus km/h', 'Käytetty %-yks', 'Toimintamatka 100 % km', 'Trendiin', 'Muistiinpanot', 'Lämpötila alussa °C', 'Lämpötila lopussa °C', 'Keskilämpötila °C', 'Vakioitu toimintamatka km', 'Olosuhderyhmä'].join(f.sep)];
     a.ds.forEach(function (d) {
       rows.push([d.date, n(d.odo, 0), n(d.socStart, 1), n(d.socEnd, 1), n(d.dist, 1), n(d.speed, 1), n(dDelta(d), 1), n(rangeOf(d), 1),
-        driveValid(d) ? 'kyllä' : 'ei', f.q(d.note), n(d.tempStart, 1), n(d.tempEnd, 1), n(d.temp, 1), d._n !== null ? n(d._n, 1) : ''].join(f.sep));
+        driveValid(d) ? 'kyllä' : 'ei', f.q(d.note), n(d.tempStart, 1), n(d.tempEnd, 1), n(d.temp, 1), d._n !== null ? n(d._n, 1) : '', f.q((classOf(d) || {}).label)].join(f.sep));
     });
     return '﻿' + rows.join('\r\n') + '\r\n';
   }
