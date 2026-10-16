@@ -106,6 +106,9 @@
   .ev .meta { font-size: 13px; color: var(--muted); }
   .ev.excluded .cap { color: var(--muted); }
   .ev .btns .btn { flex: 0 0 auto; }
+  .card.pending { border: 1px solid var(--accent); }
+  nav.tabs button { position: relative; }
+  nav.tabs button.dot::after { content: ''; position: absolute; top: 8px; left: calc(50% + 10px); width: 9px; height: 9px; border-radius: 50%; background: var(--warn); }
   .chartwrap { position: relative; width: 100%; }
   canvas { width: 100%; height: 260px; display: block; }
   .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); margin-top: 6px; }
@@ -144,6 +147,11 @@
       <p>Syötä ensin auton tiedot ja akun nimelliskapasiteetti uutena.</p>
       <button class="btn primary block" data-goto="car">Auton tiedot</button>
     </div>
+    <div class="card pending" id="pendingNotice" hidden>
+      <h2>Lataus käynnissä</h2>
+      <p id="pendingInfo" style="margin:0"></p>
+      <button class="btn primary block" data-goto="add">Lopeta lataus</button>
+    </div>
     <div class="card">
       <h2>Akun kunto</h2>
       <div class="stats">
@@ -169,7 +177,7 @@
         <span><i style="background:var(--warn)"></i>Uutena</span>
       </div>
     </div>
-    <button class="btn primary block" data-goto="add">+ Uusi lataus</button>
+    <button class="btn primary block" data-goto="add" id="newEvBtn">+ Uusi lataus</button>
   </section>
 
   <!-- UUSI LATAUS -->
@@ -190,7 +198,10 @@
       <label for="evNote">Huomio (valinnainen)</label>
       <input type="text" id="evNote" maxlength="200" placeholder="esim. kotilaturi, pakkasta -10 °C">
       <div class="preview" id="evPreview">Täytä tiedot, niin kapasiteetti lasketaan.</div>
+      <p class="hint" id="evStartHint">Voit tallentaa alkutiedot (päivämäärä, km-lukema ja varaus ennen) heti latauksen alussa ja täydentää loput, kun lataus on valmis.</p>
       <button class="btn primary block" type="submit" id="evSave">Tallenna lataus</button>
+      <button class="btn block" type="button" id="evStart">Aloita lataus – tallenna alkutiedot</button>
+      <button class="btn danger block" type="button" id="evDiscard" hidden>Hylkää keskeneräinen lataus</button>
       <button class="btn block" type="button" id="evCancel" hidden>Peruuta muokkaus</button>
     </form>
   </section>
@@ -344,6 +355,7 @@
     document.querySelectorAll('.view').forEach(function (v) { v.classList.toggle('active', v.id === 'view-' + view); });
     document.querySelectorAll('nav.tabs button').forEach(function (b) { b.classList.toggle('active', b.dataset.view === view); });
     window.scrollTo(0, 0);
+    document.querySelector('nav.tabs button[data-view=add]').classList.toggle('dot', !!data.pending);
     if (view === 'summary') renderSummary();
     if (view === 'list') renderList();
     if (view === 'add' && !$('evId').value) resetForm();
@@ -355,6 +367,10 @@
     var newCap = data.car.capacityNew;
     $('title').textContent = data.car.name || 'Akun kapasiteetti';
     $('setupNotice').hidden = !!newCap;
+    var pd = data.pending;
+    $('pendingNotice').hidden = !pd;
+    $('newEvBtn').hidden = !!pd;
+    if (pd) $('pendingInfo').textContent = 'Aloitettu ' + fmtDate(pd.date) + ' · ' + fmt(pd.km, 0) + ' km · varaus ' + fmt(pd.socBefore, 0) + ' %. Syötä lopuksi varaus jälkeen ja ladattu kWh.';
     var a = analyze();
     $('sNew').textContent = newCap ? fmt(newCap, 1) + ' kWh' : '–';
     $('sCap').textContent = isFinite(a.cap) ? fmt(a.cap, 1) + ' kWh' : '–';
@@ -469,7 +485,21 @@
     $('evDate').value = today();
     var le = lastEvent(); $('evKm').placeholder = le ? 'edellinen ' + le.km : '';
     $('evFormTitle').textContent = 'Uusi lataus'; $('evSave').textContent = 'Tallenna lataus';
-    $('evCancel').hidden = true; updatePreview();
+    $('evCancel').hidden = true;
+    var pd = data.pending;
+    if (pd) {
+      $('evDate').value = pd.date; $('evKm').value = pd.km; $('evBefore').value = pd.socBefore; $('evNote').value = pd.note || '';
+      $('evFormTitle').textContent = 'Lataus käynnissä – syötä lopputiedot';
+      $('evSave').textContent = 'Tallenna valmis lataus';
+    }
+    setPendingUi(!!pd, false);
+    updatePreview();
+    if (pd) setTimeout(function () { $('evAfter').focus(); }, 50);
+  }
+  function setPendingUi(pending, editing) {
+    $('evStart').hidden = pending || editing;
+    $('evStartHint').hidden = pending || editing;
+    $('evDiscard').hidden = !pending || editing;
   }
   function formValues() {
     return { date: $('evDate').value, km: num($('evKm').value), socBefore: num($('evBefore').value),
@@ -500,18 +530,33 @@
       if (e) Object.assign(e, v);
       toast('Lataus päivitetty');
     } else {
-      v.id = uid(); data.events.push(v);
+      v.id = uid(); data.events.push(v); delete data.pending;
       toast('Tallennettu: ' + fmt(capacityOf(v), 1) + ' kWh');
     }
     save(); $('evId').value = ''; show(id ? 'list' : 'summary');
   });
   $('evCancel').addEventListener('click', function () { $('evId').value = ''; show('list'); });
 
+  $('evStart').addEventListener('click', function () {
+    var v = formValues();
+    if (!v.date || !isFinite(v.km) || v.km < 0) return toast('Syötä päivämäärä ja km-lukema');
+    if (!(v.socBefore >= 0 && v.socBefore < 100)) return toast('Syötä varaus ennen latausta');
+    data.pending = { date: v.date, km: v.km, socBefore: v.socBefore, note: v.note };
+    save(); toast('Alkutiedot tallennettu – täydennä, kun lataus on valmis'); show('summary');
+  });
+  $('evDiscard').addEventListener('click', function () {
+    confirmBox('Hylätäänkö keskeneräisen latauksen alkutiedot?').then(function (ok) {
+      if (!ok) return;
+      delete data.pending; save(); toast('Keskeneräinen lataus hylätty'); show('summary');
+    });
+  });
+
   function editEvent(id) {
     var e = data.events.find(function (x) { return x.id === id; }); if (!e) return;
     $('evId').value = e.id; $('evDate').value = e.date; $('evKm').value = e.km;
     $('evBefore').value = e.socBefore; $('evAfter').value = e.socAfter; $('evKwh').value = e.kwh; $('evNote').value = e.note || '';
     $('evFormTitle').textContent = 'Muokkaa latausta'; $('evSave').textContent = 'Tallenna muutokset'; $('evCancel').hidden = false;
+    setPendingUi(false, true);
     updatePreview(); show('add');
   }
 
