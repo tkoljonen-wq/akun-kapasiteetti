@@ -106,6 +106,9 @@
   .ev .meta { font-size: 13px; color: var(--muted); }
   .ev.excluded .cap { color: var(--muted); }
   .ev .btns .btn { flex: 0 0 auto; }
+  .inline { display: flex; gap: 8px; }
+  .inline input { flex: 1; min-width: 0; }
+  .inline .btn { flex: 0 0 auto; }
   .card.pending { border: 1px solid var(--accent); }
   nav.tabs button { position: relative; }
   nav.tabs button.dot::after { content: ''; position: absolute; top: 8px; left: calc(50% + 10px); width: 9px; height: 9px; border-radius: 50%; background: var(--warn); }
@@ -195,8 +198,14 @@
       </div>
       <label for="evKwh">Ladattu energia (kWh)</label>
       <input type="number" id="evKwh" inputmode="decimal" min="0" step="any" required>
+      <label for="evTemp">Ulkolämpötila (°C, valinnainen)</label>
+      <div class="inline">
+        <input type="number" id="evTemp" inputmode="decimal" step="any" placeholder="–">
+        <button class="btn" type="button" id="evTempBtn">Hae</button>
+      </div>
+      <p class="hint" id="evTempHint" hidden></p>
       <label for="evNote">Huomio (valinnainen)</label>
-      <input type="text" id="evNote" maxlength="200" placeholder="esim. kotilaturi, pakkasta -10 °C">
+      <input type="text" id="evNote" maxlength="200" placeholder="esim. kotilaturi, pikalaturi">
       <div class="preview" id="evPreview">Täytä tiedot, niin kapasiteetti lasketaan.</div>
       <p class="hint" id="evStartHint">Voit tallentaa alkutiedot (päivämäärä, km-lukema ja varaus ennen) heti latauksen alussa ja täydentää loput, kun lataus on valmis.</p>
       <button class="btn primary block" type="submit" id="evSave">Tallenna lataus</button>
@@ -227,6 +236,26 @@
       <p class="hint">Pienissä latauksissa prosenttilukeman pyöristys vääristää tulosta paljon. Nämä lataukset tallennetaan, mutta niitä ei käytetä kunto- ja trendilaskentaan.</p>
       <button class="btn primary block" type="submit">Tallenna</button>
     </form>
+
+    <div class="card">
+      <h2>Lämpötilan automaattinen haku</h2>
+      <label for="wMode">Lämpötila haetaan</label>
+      <select id="wMode">
+        <option value="off">Ei automaattista hakua</option>
+        <option value="gps">Puhelimen sijainnista latauksen aikana</option>
+        <option value="place">Kiinteältä paikkakunnalta</option>
+      </select>
+      <div id="wPlaceBox" hidden>
+        <label for="wPlaceQ">Paikkakunta</label>
+        <div class="inline">
+          <input type="text" id="wPlaceQ" maxlength="60" placeholder="esim. Tampere">
+          <button class="btn" type="button" id="wPlaceSearch">Etsi</button>
+        </div>
+        <select id="wPlaceSel" hidden style="margin-top:8px"></select>
+        <p class="hint" id="wPlaceCur"></p>
+      </div>
+      <p class="hint">Lämpötila haetaan <a href="https://open-meteo.com/" target="_blank" rel="noopener" style="color:var(--accent2)">Open-Meteo</a>-sääpalvelusta, kun latauslomake avataan tai painat Hae. Puhelimen sijainti pyöristetään noin kilometrin tarkkuuteen ennen lähettämistä, eikä sitä tallenneta. Tallennetaan vain lämpötila.</p>
+    </div>
 
     <div class="card">
       <h2>Vie ja tuo tiedot</h2>
@@ -478,6 +507,96 @@
   }
   window.addEventListener('resize', function () { if ($('view-summary').classList.contains('active')) drawChart(analyze()); });
 
+  // ---------- Sää (Open-Meteo) ----------
+  function wSettings() { return data.weather || { mode: 'off' }; }
+  function round2(v) { return Math.round(v * 100) / 100; }
+  function getCoords() {
+    var w = wSettings();
+    if (w.mode === 'place' && w.place) return Promise.resolve({ lat: w.place.lat, lon: w.place.lon });
+    if (w.mode !== 'gps') return Promise.reject(new Error(w.mode === 'place' ? 'Paikkakuntaa ei ole valittu' : 'Lämpötilan haku ei ole käytössä'));
+    if (!navigator.geolocation) return Promise.reject(new Error('Sijainti ei ole käytettävissä'));
+    return new Promise(function (res, rej) {
+      navigator.geolocation.getCurrentPosition(function (p) {
+        res({ lat: round2(p.coords.latitude), lon: round2(p.coords.longitude) });
+      }, function (e) { rej(new Error(e.code === 1 ? 'Sijaintilupa evätty' : 'Sijaintia ei saatu')); },
+      { enableHighAccuracy: false, timeout: 15000, maximumAge: 600000 });
+    });
+  }
+  function fetchTemp() {
+    return getCoords().then(function (c) {
+      var url = 'https://api.open-meteo.com/v1/forecast?latitude=' + c.lat + '&longitude=' + c.lon + '&current=temperature_2m&timezone=auto';
+      return fetch(url, { cache: 'no-store' });
+    }).then(function (r) {
+      if (!r.ok) throw new Error('Sääpalvelu ei vastannut');
+      return r.json();
+    }).then(function (j) {
+      var t = j && j.current && j.current.temperature_2m;
+      if (typeof t !== 'number') throw new Error('Lämpötilaa ei saatu');
+      return t;
+    });
+  }
+  var tempReq = 0;
+  // Hakee lämpötilan lomakkeelle. Keskeneräisessä latauksessa kenttään tulee alun ja lopun keskiarvo.
+  function fillTemp(manual) {
+    var my = ++tempReq, btn = $('evTempBtn');
+    btn.disabled = true; btn.textContent = '…';
+    return fetchTemp().then(function (t) {
+      if (my !== tempReq) return;
+      var pd = data.pending, start = pd && typeof pd.temp === 'number' && !$('evId').value ? pd.temp : null;
+      if (start !== null) {
+        $('evTemp').value = Math.round((start + t) / 2 * 10) / 10;
+        showTempHint('Alussa ' + fmt(start, 1) + ' °C, nyt ' + fmt(t, 1) + ' °C – kentässä keskiarvo.');
+      } else {
+        $('evTemp').value = Math.round(t * 10) / 10;
+        showTempHint('Haettu sääpalvelusta: ' + fmt(t, 1) + ' °C');
+      }
+    }).catch(function (e) {
+      if (my !== tempReq) return;
+      if (manual) toast(e.message); else showTempHint(e.message);
+    }).finally(function () {
+      if (my === tempReq) { btn.disabled = false; btn.textContent = 'Hae'; }
+    });
+  }
+  function showTempHint(t) { $('evTempHint').textContent = t; $('evTempHint').hidden = !t; }
+  $('evTempBtn').addEventListener('click', function () {
+    if (wSettings().mode === 'off') return toast('Valitse ensin hakutapa Auto-välilehdeltä');
+    fillTemp(true);
+  });
+
+  function fillWeather() {
+    var w = wSettings();
+    $('wMode').value = w.mode || 'off';
+    $('wPlaceBox').hidden = w.mode !== 'place';
+    $('wPlaceSel').hidden = true;
+    $('wPlaceCur').textContent = w.place ? 'Valittu: ' + w.place.name : 'Paikkakuntaa ei ole valittu.';
+  }
+  $('wMode').addEventListener('change', function () {
+    var w = Object.assign({}, wSettings(), { mode: this.value });
+    data.weather = w; save(); fillWeather();
+    if (w.mode === 'gps') getCoords().then(function () { toast('Sijaintilupa kunnossa'); }, function (e) { toast(e.message); });
+  });
+  var placeResults = [];
+  $('wPlaceSearch').addEventListener('click', function () {
+    var q = $('wPlaceQ').value.trim(); if (!q) return;
+    fetch('https://geocoding-api.open-meteo.com/v1/search?count=6&language=fi&format=json&name=' + encodeURIComponent(q))
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        placeResults = (j.results || []).map(function (x) {
+          return { name: [x.name, x.admin1, x.country].filter(Boolean).join(', '), lat: round2(x.latitude), lon: round2(x.longitude) };
+        });
+        if (!placeResults.length) return toast('Paikkakuntaa ei löytynyt');
+        var sel = $('wPlaceSel');
+        sel.innerHTML = '<option value="">Valitse…</option>' + placeResults.map(function (p, i) { return '<option value="' + i + '">' + esc(p.name) + '</option>'; }).join('');
+        sel.hidden = false;
+        if (placeResults.length === 1) { sel.value = '0'; sel.dispatchEvent(new Event('change')); }
+      }).catch(function () { toast('Haku epäonnistui'); });
+  });
+  $('wPlaceSel').addEventListener('change', function () {
+    if (this.value === '') return;
+    var p = placeResults[+this.value]; if (!p) return;
+    data.weather = { mode: 'place', place: p }; save(); fillWeather(); toast('Paikkakunta tallennettu');
+  });
+
   // ---------- Latauslomake ----------
   function lastEvent() { var s = sorted(); return s[s.length - 1]; }
   function resetForm() {
@@ -494,6 +613,8 @@
     }
     setPendingUi(!!pd, false);
     updatePreview();
+    tempReq++; showTempHint(''); $('evTempBtn').disabled = false; $('evTempBtn').textContent = 'Hae';
+    if (wSettings().mode !== 'off') fillTemp(false);
     if (pd) setTimeout(function () { $('evAfter').focus(); }, 50);
   }
   function setPendingUi(pending, editing) {
@@ -503,7 +624,9 @@
   }
   function formValues() {
     return { date: $('evDate').value, km: num($('evKm').value), socBefore: num($('evBefore').value),
-      socAfter: num($('evAfter').value), kwh: num($('evKwh').value), note: $('evNote').value.trim() };
+      socAfter: num($('evAfter').value), kwh: num($('evKwh').value), temp: tempVal(num($('evTemp').value)), note: $('evNote').value.trim() };
+  }
+  function tempVal(t) { return isFinite(t) && t > -70 && t < 70 ? Math.round(t * 10) / 10 : null;
   }
   function updatePreview() {
     var v = formValues(), p = $('evPreview');
@@ -541,7 +664,7 @@
     var v = formValues();
     if (!v.date || !isFinite(v.km) || v.km < 0) return toast('Syötä päivämäärä ja km-lukema');
     if (!(v.socBefore >= 0 && v.socBefore < 100)) return toast('Syötä varaus ennen latausta');
-    data.pending = { date: v.date, km: v.km, socBefore: v.socBefore, note: v.note };
+    data.pending = { date: v.date, km: v.km, socBefore: v.socBefore, temp: v.temp, note: v.note };
     save(); toast('Alkutiedot tallennettu – täydennä, kun lataus on valmis'); show('summary');
   });
   $('evDiscard').addEventListener('click', function () {
@@ -555,6 +678,7 @@
     var e = data.events.find(function (x) { return x.id === id; }); if (!e) return;
     $('evId').value = e.id; $('evDate').value = e.date; $('evKm').value = e.km;
     $('evBefore').value = e.socBefore; $('evAfter').value = e.socAfter; $('evKwh').value = e.kwh; $('evNote').value = e.note || '';
+    $('evTemp').value = typeof e.temp === 'number' ? e.temp : ''; tempReq++; showTempHint('');
     $('evFormTitle').textContent = 'Muokkaa latausta'; $('evSave').textContent = 'Tallenna muutokset'; $('evCancel').hidden = false;
     setPendingUi(false, true);
     updatePreview(); show('add');
@@ -569,7 +693,7 @@
       var c = capacityOf(e), ok = isValid(e);
       return '<div class="ev' + (ok ? '' : ' excluded') + '">' +
         '<div class="main"><div>' + esc(fmtDate(e.date)) + ' · ' + fmt(e.km, 0) + ' km</div>' +
-        '<div class="meta">' + fmt(e.socBefore, 0) + ' → ' + fmt(e.socAfter, 0) + ' % · ' + fmt(e.kwh, 2) + ' kWh' + (ok ? '' : ' · ei trendiin') + '</div>' +
+        '<div class="meta">' + fmt(e.socBefore, 0) + ' → ' + fmt(e.socAfter, 0) + ' % · ' + fmt(e.kwh, 2) + ' kWh' + (typeof e.temp === 'number' ? ' · ' + fmt(e.temp, 1) + ' °C' : '') + (ok ? '' : ' · ei trendiin') + '</div>' +
         (e.note ? '<div class="meta">' + esc(e.note) + '</div>' : '') +
         '<div class="btns" style="margin-top:6px"><button class="btn small" data-edit="' + esc(e.id) + '">Muokkaa</button>' +
         '<button class="btn small" data-del="' + esc(e.id) + '" style="color:var(--danger)">Poista</button></div></div>' +
@@ -609,10 +733,10 @@
     var n = function (v, d) { if (!isFinite(v)) return ''; var s = (Math.round(v * Math.pow(10, d)) / Math.pow(10, d)).toString(); return fi ? s.replace('.', ',') : s; };
     var q = function (s) { s = String(s || ''); return /[";,\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
     var nc = data.car.capacityNew;
-    var rows = [['Päivämäärä', 'Km-lukema', 'Varaus ennen %', 'Varaus jälkeen %', 'Ladattu kWh', 'Ladattu %-yks', 'Kapasiteetti kWh', 'SOH %', 'Trendiin', 'Huomio'].join(sep)];
+    var rows = [['Päivämäärä', 'Km-lukema', 'Varaus ennen %', 'Varaus jälkeen %', 'Ladattu kWh', 'Ladattu %-yks', 'Kapasiteetti kWh', 'SOH %', 'Trendiin', 'Huomio', 'Lämpötila °C'].join(sep)];
     sorted().forEach(function (e) {
       var c = capacityOf(e);
-      rows.push([e.date, n(e.km, 0), n(e.socBefore, 1), n(e.socAfter, 1), n(e.kwh, 3), n(delta(e), 1), n(c, 2), nc ? n(c / nc * 100, 1) : '', isValid(e) ? 'kyllä' : 'ei', q(e.note)].join(sep));
+      rows.push([e.date, n(e.km, 0), n(e.socBefore, 1), n(e.socAfter, 1), n(e.kwh, 3), n(delta(e), 1), n(c, 2), nc ? n(c / nc * 100, 1) : '', isValid(e) ? 'kyllä' : 'ei', q(e.note), typeof e.temp === 'number' ? n(e.temp, 1) : ''].join(sep));
     });
     return '﻿' + rows.join('\r\n') + '\r\n';
   }
@@ -653,9 +777,16 @@
   function cleanEvent(e) {
     if (!e || typeof e !== 'object') return null;
     var o = { id: uid(), date: String(e.date || ''), km: num(e.km), socBefore: num(e.socBefore),
-      socAfter: num(e.socAfter), kwh: num(e.kwh), note: String(e.note || '').slice(0, 200) };
+      socAfter: num(e.socAfter), kwh: num(e.kwh), temp: tempVal(num(e.temp)), note: String(e.note || '').slice(0, 200) };
     if (!/^\d{4}-\d{2}-\d{2}$/.test(o.date) || !isFinite(o.km) || !(o.socBefore >= 0 && o.socAfter <= 100 && o.socAfter > o.socBefore) || !(o.kwh > 0)) return null;
     return o;
+  }
+  function cleanWeather(w) {
+    if (!w || typeof w !== 'object') return { mode: 'off' };
+    var p = w.place, out = { mode: ['off', 'gps', 'place'].indexOf(w.mode) >= 0 ? w.mode : 'off' };
+    if (p && isFinite(num(p.lat)) && isFinite(num(p.lon))) out.place = { name: String(p.name || '').slice(0, 120), lat: round2(num(p.lat)), lon: round2(num(p.lon)) };
+    if (out.mode === 'place' && !out.place) out.mode = 'off';
+    return out;
   }
   function importJson(txt) {
     var o = JSON.parse(txt), d = o.data || o;
@@ -665,9 +796,10 @@
       var c = d.car || {}, cap = num(c.capacityNew), md = parseInt(c.minDelta, 10);
       data = {
         car: { name: String(c.name || '').slice(0, 60), capacityNew: cap > 0 ? cap : null, minDelta: md >= 1 && md <= 100 ? md : 20 },
-        events: d.events.map(cleanEvent).filter(Boolean)
+        events: d.events.map(cleanEvent).filter(Boolean),
+        weather: cleanWeather(d.weather)
       };
-      save(); fillCar(); toast('Tiedot palautettu'); show('summary');
+      save(); fillCar(); fillWeather(); toast('Tiedot palautettu'); show('summary');
     });
   }
   function importCsv(txt) {
@@ -687,7 +819,7 @@
     var added = [];
     lines.slice(1).forEach(function (l) {
       var c = parse(l);
-      var e = { id: uid(), date: c[0], km: num(c[1]), socBefore: num(c[2]), socAfter: num(c[3]), kwh: num(c[4]), note: c[9] || '' };
+      var e = { id: uid(), date: c[0], km: num(c[1]), socBefore: num(c[2]), socAfter: num(c[3]), kwh: num(c[4]), temp: tempVal(num(c[10])), note: (c[9] || '').slice(0, 200) };
       if (/^\d{4}-\d{2}-\d{2}$/.test(e.date) && isFinite(e.km) && e.socAfter > e.socBefore && e.kwh > 0) added.push(e);
     });
     if (!added.length) throw new Error('ei kelvollisia rivejä');
@@ -704,7 +836,7 @@
     confirmBox('Poistetaanko kaikki auton tiedot ja lataukset pysyvästi? Ota ensin varmuuskopio.').then(function (ok) {
       if (!ok) return;
       try { localStorage.removeItem(STORE_KEY); } catch (e) {}
-      data = emptyData(); fillCar(); toast('Tiedot poistettu'); show('summary');
+      data = emptyData(); fillCar(); fillWeather(); toast('Tiedot poistettu'); show('summary');
     });
   });
 
@@ -720,7 +852,7 @@
   updateInstall();
 
   // ---------- Käynnistys ----------
-  fillCar();
+  fillCar(); fillWeather();
   show(data.car.capacityNew ? 'summary' : 'car');
 })();
 </script>
