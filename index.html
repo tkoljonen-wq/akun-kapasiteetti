@@ -163,8 +163,10 @@
         <div class="stat"><div class="v" id="sNew">–</div><div class="l">Kapasiteetti uutena</div></div>
         <div class="stat"><div class="v" id="sTrend">–</div><div class="l">Muutos / 10 000 km (trendi)</div></div>
         <div class="stat"><div class="v" id="sProj">–</div><div class="l" id="sProjL">Arvio: 80 % kunto saavutetaan</div></div>
+        <div class="stat big"><div class="v" id="sTemp" style="font-size:21px;color:var(--text)">–</div><div class="l">Lämpötilan vaikutus mittaukseen (alle +15 °C)</div></div>
       </div>
       <p class="hint" id="sInfo"></p>
+      <p class="hint" id="sModel"></p>
     </div>
     <div class="card">
       <h2>Kapasiteetti ajokilometrien mukaan</h2>
@@ -174,8 +176,9 @@
       </div>
       <div class="chartwrap"><canvas id="chart"></canvas></div>
       <div class="legend">
-        <span><i style="background:var(--accent2)"></i>Lataus</span>
-        <span><i style="background:var(--muted)"></i>Pieni lataus (ei trendiin)</span>
+        <span id="lgNorm"><i style="background:var(--accent2)"></i>Vakioitu</span>
+        <span id="lgRaw"><i style="background:var(--accent2);opacity:.35"></i>Mitattu</span>
+        <span><i style="background:var(--muted)"></i>Ei trendiin</span>
         <span><i style="background:var(--accent)"></i>Trendi</span>
         <span><i style="background:var(--warn)"></i>Uutena</span>
       </div>
@@ -198,14 +201,21 @@
       </div>
       <label for="evKwh">Ladattu energia (kWh)</label>
       <input type="number" id="evKwh" inputmode="decimal" min="0" step="any" required>
-      <label for="evTemp">Ulkolämpötila (°C, valinnainen)</label>
+      <label for="evCharger">Laturi</label>
+      <select id="evCharger">
+        <option value="home">Kotilaturi (AC)</option>
+        <option value="ac">Julkinen AC</option>
+        <option value="dc">DC-pikalaturi</option>
+        <option value="">Ei tiedossa</option>
+      </select>
+      <label for="evTemp">Ulkolämpötila, 6 h keskiarvo (°C, valinnainen)</label>
       <div class="inline">
         <input type="number" id="evTemp" inputmode="decimal" step="any" placeholder="–">
         <button class="btn" type="button" id="evTempBtn">Hae</button>
       </div>
       <p class="hint" id="evTempHint" hidden></p>
       <label for="evNote">Huomio (valinnainen)</label>
-      <input type="text" id="evNote" maxlength="200" placeholder="esim. kotilaturi, pikalaturi">
+      <input type="text" id="evNote" maxlength="200" placeholder="esim. lämmin talli, esilämmitys">
       <div class="preview" id="evPreview">Täytä tiedot, niin kapasiteetti lasketaan.</div>
       <p class="hint" id="evStartHint">Voit tallentaa alkutiedot (päivämäärä, km-lukema ja varaus ennen) heti latauksen alussa ja täydentää loput, kun lataus on valmis.</p>
       <button class="btn primary block" type="submit" id="evSave">Tallenna lataus</button>
@@ -279,9 +289,13 @@
 
     <div class="card">
       <h2>Laskentatapa</h2>
-      <p class="hint" style="margin:0">Kapasiteetti = ladattu kWh ÷ (varaus jälkeen − varaus ennen) × 100.<br>
-      Lämpötilaa ja lataushäviöitä ei huomioida. Laturin mittaama energia sisältää häviöt, joten arvo on yleensä hieman todellista suurempi – trendin seurantaan tämä ei vaikuta, kun lataat samalla tavalla.<br>
-      Kunto (SOH) lasketaan viiden viimeisimmän hyväksytyn latauksen painotettuna keskiarvona (isommat lataukset painavat enemmän). Trendi on lineaarinen regressio km-lukeman suhteen.</p>
+      <p class="hint" style="margin:0">Mitattu kapasiteetti = ladattu kWh ÷ (varaus jälkeen − varaus ennen) × 100. Laturin mittaama energia sisältää häviöt, joten arvo on yleensä hieman todellista suurempi.<br><br>
+      Trendi lasketaan painotetulla regressiolla (isommat lataukset painavat enemmän):<br>
+      <b>kapasiteetti = a + b · km + c · min(T − 15 °C, 0) + laturivakio</b><br><br>
+      • <b>b</b> on kapasiteetin muutos ajokilometreittäin lämpötilasta ja laturista riippumatta.<br>
+      • <b>c</b> on lämpötilan vaikutus alle +15 °C:ssa. T on ulkolämpötilan 6 tunnin keskiarvo, koska akku lämpenee ja jäähtyy hitaasti. Lämpötilatermi otetaan käyttöön, kun latauksia lämpötilatiedolla on vähintään 10, lämpötilat vaihtelevat vähintään 15 °C ja sekä alle että yli +10 °C:n latauksia on vähintään 3. Lisäksi kertoimen pitää olla tilastollisesti selvä (vähintään 2 × keskivirhe). Muuten korjausta ei käytetä.<br>
+      • <b>Laturivakio</b> erottaa laturityyppien häviöerot. Vertailukohta on eniten käytetty laturi. Muun laturityypin lataukset otetaan mukaan, kun niitä on vähintään 3.<br><br>
+      Vakioitu kapasiteetti on mittaus muunnettuna vertailuoloihin (+15 °C, eniten käytetty laturi). Kunto (SOH) on viiden viimeisimmän vakioidun latauksen painotettu keskiarvo. Ensimmäisenä vuonna kausivaihtelu ja kuluminen sekoittuvat helposti, joten luotettavin arvio saadaan yli vuoden datalla.</p>
     </div>
 
     <div class="card">
@@ -325,8 +339,9 @@
     return emptyData();
   }
   var data = load();
+  function noPriv(k, v) { return k.charAt(0) === '_' ? undefined : v; }
   function save() {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(data)); }
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(data, noPriv)); }
     catch (e) { toast('Tallennus epäonnistui: ' + e.message); }
   }
   var prefs = (function () { try { return JSON.parse(localStorage.getItem(PREF_KEY)) || {}; } catch (e) { return {}; } })();
@@ -366,17 +381,127 @@
     var den = n * sxx - sx * sx; if (den === 0) return null;
     var b = (n * sxy - sx * sy) / den; return { slope: b, intercept: (sy - b * sx) / n };
   }
+  // ---------- Malli: kapasiteetti = a + b·km + c·min(T−15,0) + laturivakio ----------
+  var CHARGERS = { home: 'Kotilaturi (AC)', ac: 'Julkinen AC', dc: 'DC-pikalaturi' };
+  function chargerName(k) { return CHARGERS[k] || 'Laturi ei tiedossa'; }
+  function lcFirst(t) { return /^.[A-ZÄÖ]/.test(t) ? t : t.charAt(0).toLowerCase() + t.slice(1); }
+  function chg(e) { return CHARGERS[e.charger] ? e.charger : ''; }
+  var KNEE = 15, T_MIN_N = 10, T_MIN_RANGE = 15, T_SPLIT = 10, CHG_MIN_N = 3;
+  function hinge(t) { return Math.min(t - KNEE, 0); }
+  function hasTemp(e) { return typeof e.temp === 'number' && isFinite(e.temp); }
+
+  function invert(M) { // Gauss–Jordan osittaisella tuennalla
+    var n = M.length, A = M.map(function (r, i) { return r.concat(r.map(function (_, j) { return i === j ? 1 : 0; })); });
+    for (var c = 0; c < n; c++) {
+      var piv = c;
+      for (var r = c + 1; r < n; r++) if (Math.abs(A[r][c]) > Math.abs(A[piv][c])) piv = r;
+      if (Math.abs(A[piv][c]) < 1e-10) return null;
+      var tmp = A[c]; A[c] = A[piv]; A[piv] = tmp;
+      var d = A[c][c];
+      for (var j = 0; j < 2 * n; j++) A[c][j] /= d;
+      for (r = 0; r < n; r++) if (r !== c) {
+        var f = A[r][c];
+        if (f) for (j = 0; j < 2 * n; j++) A[r][j] -= f * A[c][j];
+      }
+    }
+    return A.map(function (r) { return r.slice(n); });
+  }
+  // Painotettu pienimmän neliösumman sovitus; palauttaa kertoimet ja keskivirheet.
+  function wls(X, y, w) {
+    var n = X.length, p = X[0].length, A = [], v = [], i, j;
+    for (i = 0; i < p; i++) { A.push(new Array(p).fill(0)); v.push(0); }
+    X.forEach(function (r, k) {
+      for (i = 0; i < p; i++) { v[i] += w[k] * r[i] * y[k]; for (j = 0; j < p; j++) A[i][j] += w[k] * r[i] * r[j]; }
+    });
+    var inv = invert(A); if (!inv) return null;
+    var beta = inv.map(function (r) { return r.reduce(function (s, x, j) { return s + x * v[j]; }, 0); });
+    var rss = 0;
+    X.forEach(function (r, k) { var res = y[k] - r.reduce(function (s, x, j) { return s + x * beta[j]; }, 0); rss += w[k] * res * res; });
+    var s2 = n > p ? rss / (n - p) : NaN;
+    return { beta: beta, se: inv.map(function (r, i) { return Math.sqrt(s2 * r[i]); }) };
+  }
+  function regression(pts) { // pts: [{x,y,w}]
+    if (pts.length < 2) return null;
+    var x0 = pts[0].x, sc = Math.abs(pts[pts.length - 1].x - x0) || 1;
+    var res = wls(pts.map(function (p) { return [1, (p.x - x0) / sc]; }), pts.map(function (p) { return p.y; }), pts.map(function (p) { return p.w || 1; }));
+    if (!res) return null;
+    return { slope: res.beta[1] / sc, intercept: res.beta[0] - res.beta[1] / sc * x0 };
+  }
+  // Sovittaa mallin annetuilla termeillä. km skaalataan 10 000 km:n yksiköihin numeriikan vuoksi.
+  function fitTerms(set, useT, types) {
+    var p = 2 + (useT ? 1 : 0) + types.length;
+    if (set.length < p + 2) return null;
+    var kmSpan = set[set.length - 1].km - set[0].km;
+    if (kmSpan < 500) return null;
+    var X = set.map(function (e) {
+      var r = [1, e.km / 10000];
+      if (useT) r.push(hinge(e.temp));
+      types.forEach(function (k) { r.push(chg(e) === k ? 1 : 0); });
+      return r;
+    });
+    var res = wls(X, set.map(capacityOf), set.map(delta)); if (!res) return null;
+    var m = { a: res.beta[0], b: res.beta[1] / 10000, useT: useT, c: 0, cSe: NaN, off: {}, kmSpan: kmSpan, n: set.length };
+    if (useT) { m.c = res.beta[2]; m.cSe = res.se[2]; }
+    types.forEach(function (k, i) { m.off[k] = res.beta[2 + (useT ? 1 : 0) + i]; });
+    return m;
+  }
+  function fitModel(valid) {
+    var info = { ref: '', types: [], skipped: {}, t: { n: 0, range: 0, cold: 0, warm: 0, state: 'data' } };
+    if (!valid.length) return { model: null, info: info };
+    var counts = {};
+    valid.forEach(function (e) { var k = chg(e); counts[k] = (counts[k] || 0) + 1; });
+    var keys = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a] || (a === '' ? 1 : 0) - (b === '' ? 1 : 0); });
+    info.ref = keys[0];
+    keys.slice(1).forEach(function (k) { if (counts[k] >= CHG_MIN_N) info.types.push(k); else info.skipped[k] = counts[k]; });
+    var inScope = function (e) { var k = chg(e); return k === info.ref || info.types.indexOf(k) >= 0; };
+    var base = valid.filter(inScope);
+    var typesIn = function (set) { return info.types.filter(function (k) { return set.some(function (e) { return chg(e) === k; }); }); };
+
+    // Lämpötilatermi vain, jos dataa on riittävästi ja kerroin on tilastollisesti selvä.
+    var withT = base.filter(hasTemp), t = info.t;
+    t.n = withT.length;
+    if (withT.length) {
+      var temps = withT.map(function (e) { return e.temp; });
+      t.range = Math.max.apply(null, temps) - Math.min.apply(null, temps);
+      t.cold = temps.filter(function (x) { return x < T_SPLIT; }).length;
+      t.warm = t.n - t.cold;
+    }
+    var model = null, newCap = data.car.capacityNew;
+    if (t.n >= T_MIN_N && t.range >= T_MIN_RANGE && t.cold >= 3 && t.warm >= 3) {
+      var mt = fitTerms(withT, true, typesIn(withT));
+      if (mt) {
+        t.c = mt.c; t.cSe = mt.cSe;
+        var limit = newCap ? newCap * 0.01 : 1;
+        if (Math.abs(mt.c) >= 2 * mt.cSe && Math.abs(mt.c) <= limit) { model = mt; t.state = 'on'; }
+        else t.state = 'unsure';
+      }
+    }
+    if (!model) model = fitTerms(base, false, typesIn(base)) || fitTerms(valid.filter(function (e) { return chg(e) === info.ref; }), false, []);
+    if (model && !model.useT && Object.keys(model.off).length === 0 && info.types.length) {
+      info.types.forEach(function (k) { info.skipped[k] = counts[k]; }); info.types = [];
+    }
+    return { model: model, info: info };
+  }
+  // Mittaus vertailuoloihin (+15 °C, vertailulaturi); null jos ei voida vakioida.
+  function normalizer(m, info) {
+    return function (e) {
+      var c = capacityOf(e); if (!isFinite(c)) return null;
+      if (!m) return c;
+      var k = chg(e);
+      if (k !== info.ref && !(k in m.off)) return null;
+      if (m.useT) { if (!hasTemp(e)) return null; c -= m.c * hinge(e.temp); }
+      return c - (m.off[k] || 0);
+    };
+  }
   function analyze() {
     var evs = sorted(), valid = evs.filter(isValid);
-    var recent = valid.slice(-5), wsum = 0, csum = 0;
-    recent.forEach(function (e) { var w = delta(e); wsum += w; csum += capacityOf(e) * w; });
-    var cap = wsum ? csum / wsum : NaN;
-    var reg = null, kmSpan = 0;
-    if (valid.length >= 3) {
-      kmSpan = valid[valid.length - 1].km - valid[0].km;
-      if (kmSpan >= 500) reg = regression(valid.map(function (e) { return { x: e.km, y: capacityOf(e) }; }));
-    }
-    return { evs: evs, valid: valid, cap: cap, reg: reg, kmSpan: kmSpan };
+    var f = fitModel(valid), m = f.model, norm = normalizer(m, f.info);
+    var corrected = !!(m && (m.useT || Object.keys(m.off).length));
+    evs.forEach(function (e) { e._n = isValid(e) ? norm(e) : null; });
+    var scope = valid.filter(function (e) { return e._n !== null; });
+    var recent = scope.slice(-5), wsum = 0, csum = 0;
+    recent.forEach(function (e) { var w = delta(e); wsum += w; csum += e._n * w; });
+    return { evs: evs, valid: valid, scope: scope, cap: wsum ? csum / wsum : NaN, m: m, info: f.info, corrected: corrected };
   }
 
   // ---------- Näkymät ----------
@@ -400,28 +525,51 @@
     $('pendingNotice').hidden = !pd;
     $('newEvBtn').hidden = !!pd;
     if (pd) $('pendingInfo').textContent = 'Aloitettu ' + fmtDate(pd.date) + ' · ' + fmt(pd.km, 0) + ' km · varaus ' + fmt(pd.socBefore, 0) + ' %. Syötä lopuksi varaus jälkeen ja ladattu kWh.';
-    var a = analyze();
+    var a = analyze(), m = a.m, inf = a.info;
+    var refTxt = (m && m.useT ? '+15 °C, ' : '') + (inf.ref ? lcFirst(chargerName(inf.ref)) : 'sama laturi');
     $('sNew').textContent = newCap ? fmt(newCap, 1) + ' kWh' : '–';
     $('sCap').textContent = isFinite(a.cap) ? fmt(a.cap, 1) + ' kWh' : '–';
     $('sSoh').textContent = isFinite(a.cap) && newCap ? fmt(a.cap / newCap * 100, 1) + ' %' : '–';
+    $('sSohL').textContent = a.corrected ? 'Kunto (SOH), vakioitu: ' + refTxt : 'Kunto (SOH) viimeisimpien latausten perusteella';
     var info = [];
-    info.push(a.evs.length + ' latausta, joista ' + a.valid.length + ' käytetään laskentaan (vähintään ' + minDelta() + ' %-yksikön lataukset).');
-    if (a.reg) {
-      var per10k = a.reg.slope * 10000;
+    info.push(a.evs.length + ' latausta, joista ' + a.scope.length + ' käytetään laskentaan (vähintään ' + minDelta() + ' %-yksikön lataukset).');
+    if (m) {
+      var per10k = m.b * 10000;
       var pct = newCap ? per10k / newCap * 100 : NaN;
-      $('sTrend').textContent = (per10k > 0 ? '+' : '') + fmt(per10k, 2) + ' kWh' ;
+      $('sTrend').textContent = (per10k > 0 ? '+' : '') + fmt(per10k, 2) + ' kWh';
       if (isFinite(pct)) $('sTrend').textContent += ' (' + (pct > 0 ? '+' : '') + fmt(pct, 1) + ' %)';
-      if (newCap && a.reg.slope < 0) {
-        var km80 = (0.8 * newCap - a.reg.intercept) / a.reg.slope;
+      if (newCap && m.b < 0) {
+        var km80 = (0.8 * newCap - m.a) / m.b;
         var lastKm = a.evs[a.evs.length - 1].km;
         $('sProj').textContent = km80 <= lastKm ? 'saavutettu' : fmt(Math.round(km80 / 1000) * 1000, 0) + ' km';
       } else $('sProj').textContent = '–';
+      if (m.kmSpan < 10000) info.push('Trendi on vielä epävarma lyhyen km-välin (' + fmt(m.kmSpan, 0) + ' km) vuoksi.');
     } else {
       $('sTrend').textContent = '–'; $('sProj').textContent = '–';
-      info.push('Trendi lasketaan, kun hyväksyttyjä latauksia on vähintään 3 ja niiden välillä vähintään 500 km.');
+      info.push('Trendi lasketaan, kun hyväksyttyjä latauksia on vähintään 4 ja niiden välillä vähintään 500 km.');
     }
-    if (a.reg && a.kmSpan < 10000) info.push('Trendi on vielä epävarma lyhyen km-välin (' + fmt(a.kmSpan, 0) + ' km) vuoksi.');
     $('sInfo').textContent = info.join(' ');
+
+    // Lämpötila- ja laturivakioinnin tila
+    var t = inf.t, mi = [];
+    if (t.state === 'on') {
+      $('sTemp').textContent = (m.c < 0 ? '+' : '−') + fmt(Math.abs(m.c), 2) + ' kWh / aste kylmempää';
+      mi.push('Lämpötilakorjaus on käytössä. Jokainen aste alle +15 °C ' + (m.c > 0 ? 'pienentää' : 'kasvattaa') + ' mitattua kapasiteettia noin ' + fmt(Math.abs(m.c), 2) + ' kWh (± ' + fmt(m.cSe, 2) + ').'
+        + ' Esimerkiksi −10 °C:ssa mittaus poikkeaa ' + fmt(Math.abs(m.c * 25), 1) + ' kWh vertailuoloista.');
+    } else if (t.state === 'unsure') {
+      $('sTemp').textContent = 'ei selvää vaikutusta';
+      mi.push('Lämpötilan vaikutusta ei voitu erottaa luotettavasti (' + fmt(t.c, 2) + ' ± ' + fmt(t.cSe, 2) + ' kWh/°C), joten korjausta ei käytetä.');
+    } else {
+      $('sTemp').textContent = 'kerätään dataa';
+      mi.push('Lämpötilakorjaus otetaan käyttöön, kun latauksia lämpötilatiedolla on vähintään ' + T_MIN_N + ' (nyt ' + t.n + '), lämpötilat vaihtelevat vähintään ' + T_MIN_RANGE + ' °C (nyt ' + fmt(t.range, 0) + ' °C) ja sekä alle että yli +' + T_SPLIT + ' °C:n latauksia on vähintään 3 (nyt ' + t.cold + ' / ' + t.warm + ').');
+    }
+    if (m) Object.keys(m.off).forEach(function (k) {
+      mi.push(chargerName(k) + ': mittaus ' + (m.off[k] >= 0 ? '+' : '') + fmt(m.off[k], 1) + ' kWh verrattuna vertailulaturiin (' + lcFirst(chargerName(inf.ref)) + ').');
+    });
+    Object.keys(inf.skipped).forEach(function (k) {
+      mi.push('Laturityypin ”' + lcFirst(chargerName(k)) + '” ' + inf.skipped[k] + ' latausta ei ole mukana trendissä, ennen kuin niitä on vähintään ' + CHG_MIN_N + '.');
+    });
+    $('sModel').textContent = mi.join(' ');
     drawChart(a);
   }
 
@@ -446,7 +594,9 @@
     if (!W) return;
     cv.width = W * dpr; cv.height = H * dpr;
     var ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
-    var muted = cssVar('--muted'), border = cssVar('--border');
+    var muted = cssVar('--muted'), border = cssVar('--border'), blue = cssVar('--accent2');
+    $('lgRaw').hidden = !a.corrected;
+    $('lgNorm').lastChild.textContent = a.corrected ? 'Vakioitu' : 'Lataus';
     ctx.font = '12px system-ui, sans-serif';
     var evs = a.evs.filter(function (e) { return isFinite(capacityOf(e)); });
     if (!evs.length) {
@@ -455,6 +605,7 @@
     }
     var xOf = chartMode === 'km' ? function (e) { return e.km; } : function (e) { return Date.parse(e.date); };
     var xs = evs.map(xOf), ys = evs.map(capacityOf);
+    evs.forEach(function (e) { if (e._n !== null) ys.push(e._n); });
     var newCap = data.car.capacityNew;
     var yMin = Math.min.apply(null, ys), yMax = Math.max.apply(null, ys);
     if (newCap) { yMin = Math.min(yMin, newCap); yMax = Math.max(yMax, newCap); }
@@ -490,19 +641,31 @@
       ctx.strokeStyle = cssVar('--warn'); ctx.setLineDash([5, 4]);
       ctx.beginPath(); ctx.moveTo(L, Y(newCap)); ctx.lineTo(W - R, Y(newCap)); ctx.stroke(); ctx.setLineDash([]);
     }
-    // trendi
-    var reg = a.reg;
-    if (chartMode === 'date' && a.valid.length >= 3) {
-      reg = regression(a.valid.map(function (e) { return { x: Date.parse(e.date), y: capacityOf(e) }; }));
+    // trendi vertailuoloissa
+    var line = null;
+    if (a.m && chartMode === 'km') line = { slope: a.m.b, intercept: a.m.a };
+    if (a.m && chartMode === 'date') {
+      line = regression(a.scope.slice().sort(function (p, q) { return Date.parse(p.date) - Date.parse(q.date); })
+        .map(function (e) { return { x: Date.parse(e.date), y: e._n, w: delta(e) }; }));
     }
-    if (reg && (chartMode === 'km' || a.reg)) {
+    if (line) {
       ctx.strokeStyle = cssVar('--accent'); ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(X(xMin), Y(reg.intercept + reg.slope * xMin)); ctx.lineTo(X(xMax), Y(reg.intercept + reg.slope * xMax)); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(X(xMin), Y(line.intercept + line.slope * xMin)); ctx.lineTo(X(xMax), Y(line.intercept + line.slope * xMax)); ctx.stroke();
     }
-    // pisteet
+    // pisteet: mitattu haaleana, vakioitu täytenä
     evs.forEach(function (e) {
-      ctx.fillStyle = isValid(e) ? cssVar('--accent2') : muted;
-      ctx.beginPath(); ctx.arc(X(xOf(e)), Y(capacityOf(e)), isValid(e) ? 4.5 : 3, 0, Math.PI * 2); ctx.fill();
+      var px = X(xOf(e)), raw = capacityOf(e);
+      if (!isValid(e) || e._n === null) {
+        ctx.fillStyle = muted; ctx.beginPath(); ctx.arc(px, Y(raw), 3, 0, Math.PI * 2); ctx.fill(); return;
+      }
+      if (a.corrected) {
+        ctx.globalAlpha = 0.35; ctx.fillStyle = blue;
+        ctx.beginPath(); ctx.arc(px, Y(raw), 3.5, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = blue; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(px, Y(raw)); ctx.lineTo(px, Y(e._n)); ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      ctx.fillStyle = blue; ctx.beginPath(); ctx.arc(px, Y(e._n), 4.5, 0, Math.PI * 2); ctx.fill();
     });
   }
   window.addEventListener('resize', function () { if ($('view-summary').classList.contains('active')) drawChart(analyze()); });
@@ -522,17 +685,24 @@
       { enableHighAccuracy: false, timeout: 15000, maximumAge: 600000 });
     });
   }
+  // Palauttaa nykylämpötilan ja edellisten 6 tunnin keskiarvon (akun lämpömassa tasoittaa vaihtelut).
   function fetchTemp() {
     return getCoords().then(function (c) {
-      var url = 'https://api.open-meteo.com/v1/forecast?latitude=' + c.lat + '&longitude=' + c.lon + '&current=temperature_2m&timezone=auto';
+      var url = 'https://api.open-meteo.com/v1/forecast?latitude=' + c.lat + '&longitude=' + c.lon +
+        '&current=temperature_2m&hourly=temperature_2m&past_hours=6&forecast_hours=1&timezone=auto';
       return fetch(url, { cache: 'no-store' });
     }).then(function (r) {
       if (!r.ok) throw new Error('Sääpalvelu ei vastannut');
       return r.json();
     }).then(function (j) {
-      var t = j && j.current && j.current.temperature_2m;
-      if (typeof t !== 'number') throw new Error('Lämpötilaa ei saatu');
-      return t;
+      var now = j && j.current && j.current.temperature_2m;
+      if (typeof now !== 'number') throw new Error('Lämpötilaa ei saatu');
+      var h = j.hourly || {}, times = h.time || [], vals = h.temperature_2m || [], cur = j.current.time || '';
+      var last = -1;
+      times.forEach(function (tm, i) { if (tm <= cur && typeof vals[i] === 'number') last = i; });
+      var win = last >= 0 ? vals.slice(Math.max(0, last - 5), last + 1).filter(function (v) { return typeof v === 'number'; }) : [];
+      var mean = win.length ? win.reduce(function (s, v) { return s + v; }, 0) / win.length : now;
+      return { now: now, mean: mean };
     });
   }
   var tempReq = 0;
@@ -540,15 +710,16 @@
   function fillTemp(manual) {
     var my = ++tempReq, btn = $('evTempBtn');
     btn.disabled = true; btn.textContent = '…';
-    return fetchTemp().then(function (t) {
+    return fetchTemp().then(function (r) {
       if (my !== tempReq) return;
+      var t = r.mean;
       var pd = data.pending, start = pd && typeof pd.temp === 'number' && !$('evId').value ? pd.temp : null;
       if (start !== null) {
         $('evTemp').value = Math.round((start + t) / 2 * 10) / 10;
-        showTempHint('Alussa ' + fmt(start, 1) + ' °C, nyt ' + fmt(t, 1) + ' °C – kentässä keskiarvo.');
+        showTempHint('6 h keskiarvo alussa ' + fmt(start, 1) + ' °C ja nyt ' + fmt(t, 1) + ' °C – kentässä näiden keskiarvo (lämpötila nyt ' + fmt(r.now, 1) + ' °C).');
       } else {
         $('evTemp').value = Math.round(t * 10) / 10;
-        showTempHint('Haettu sääpalvelusta: ' + fmt(t, 1) + ' °C');
+        showTempHint('6 h keskiarvo ' + fmt(t, 1) + ' °C (lämpötila nyt ' + fmt(r.now, 1) + ' °C)');
       }
     }).catch(function (e) {
       if (my !== tempReq) return;
@@ -605,9 +776,11 @@
     var le = lastEvent(); $('evKm').placeholder = le ? 'edellinen ' + le.km : '';
     $('evFormTitle').textContent = 'Uusi lataus'; $('evSave').textContent = 'Tallenna lataus';
     $('evCancel').hidden = true;
+    $('evCharger').value = CHARGERS[prefs.lastCharger] || prefs.lastCharger === '' ? prefs.lastCharger : 'home';
     var pd = data.pending;
     if (pd) {
       $('evDate').value = pd.date; $('evKm').value = pd.km; $('evBefore').value = pd.socBefore; $('evNote').value = pd.note || '';
+      if (typeof pd.charger === 'string') $('evCharger').value = pd.charger;
       $('evFormTitle').textContent = 'Lataus käynnissä – syötä lopputiedot';
       $('evSave').textContent = 'Tallenna valmis lataus';
     }
@@ -624,7 +797,7 @@
   }
   function formValues() {
     return { date: $('evDate').value, km: num($('evKm').value), socBefore: num($('evBefore').value),
-      socAfter: num($('evAfter').value), kwh: num($('evKwh').value), temp: tempVal(num($('evTemp').value)), note: $('evNote').value.trim() };
+      socAfter: num($('evAfter').value), kwh: num($('evKwh').value), temp: tempVal(num($('evTemp').value)), charger: CHARGERS[$('evCharger').value] ? $('evCharger').value : '', note: $('evNote').value.trim() };
   }
   function tempVal(t) { return isFinite(t) && t > -70 && t < 70 ? Math.round(t * 10) / 10 : null;
   }
@@ -648,6 +821,7 @@
     if (!(v.socBefore >= 0 && v.socAfter <= 100 && v.socAfter > v.socBefore)) return toast('Tarkista varausprosentit');
     if (!(v.kwh > 0)) return toast('Tarkista ladattu energia');
     var id = $('evId').value;
+    prefs.lastCharger = v.charger; savePrefs();
     if (id) {
       var e = data.events.find(function (x) { return x.id === id; });
       if (e) Object.assign(e, v);
@@ -664,7 +838,7 @@
     var v = formValues();
     if (!v.date || !isFinite(v.km) || v.km < 0) return toast('Syötä päivämäärä ja km-lukema');
     if (!(v.socBefore >= 0 && v.socBefore < 100)) return toast('Syötä varaus ennen latausta');
-    data.pending = { date: v.date, km: v.km, socBefore: v.socBefore, temp: v.temp, note: v.note };
+    data.pending = { date: v.date, km: v.km, socBefore: v.socBefore, temp: v.temp, charger: v.charger, note: v.note };
     save(); toast('Alkutiedot tallennettu – täydennä, kun lataus on valmis'); show('summary');
   });
   $('evDiscard').addEventListener('click', function () {
@@ -679,6 +853,7 @@
     $('evId').value = e.id; $('evDate').value = e.date; $('evKm').value = e.km;
     $('evBefore').value = e.socBefore; $('evAfter').value = e.socAfter; $('evKwh').value = e.kwh; $('evNote').value = e.note || '';
     $('evTemp').value = typeof e.temp === 'number' ? e.temp : ''; tempReq++; showTempHint('');
+    $('evCharger').value = chg(e);
     $('evFormTitle').textContent = 'Muokkaa latausta'; $('evSave').textContent = 'Tallenna muutokset'; $('evCancel').hidden = false;
     setPendingUi(false, true);
     updatePreview(); show('add');
@@ -686,7 +861,7 @@
 
   // ---------- Lista ----------
   function renderList() {
-    var evs = sorted().reverse(), nc = data.car.capacityNew;
+    var an = analyze(), evs = an.evs.slice().reverse(), nc = data.car.capacityNew;
     $('evCount').textContent = evs.length;
     if (!evs.length) { $('evList').innerHTML = '<div class="empty">Ei vielä latauksia.</div>'; return; }
     $('evList').innerHTML = evs.map(function (e) {
@@ -694,6 +869,7 @@
       return '<div class="ev' + (ok ? '' : ' excluded') + '">' +
         '<div class="main"><div>' + esc(fmtDate(e.date)) + ' · ' + fmt(e.km, 0) + ' km</div>' +
         '<div class="meta">' + fmt(e.socBefore, 0) + ' → ' + fmt(e.socAfter, 0) + ' % · ' + fmt(e.kwh, 2) + ' kWh' + (typeof e.temp === 'number' ? ' · ' + fmt(e.temp, 1) + ' °C' : '') + (ok ? '' : ' · ei trendiin') + '</div>' +
+        '<div class="meta">' + esc(chargerName(chg(e))) + (an.corrected && e._n !== null ? ' · vakioitu ' + fmt(e._n, 1) + ' kWh' : '') + '</div>' +
         (e.note ? '<div class="meta">' + esc(e.note) + '</div>' : '') +
         '<div class="btns" style="margin-top:6px"><button class="btn small" data-edit="' + esc(e.id) + '">Muokkaa</button>' +
         '<button class="btn small" data-del="' + esc(e.id) + '" style="color:var(--danger)">Poista</button></div></div>' +
@@ -733,10 +909,11 @@
     var n = function (v, d) { if (!isFinite(v)) return ''; var s = (Math.round(v * Math.pow(10, d)) / Math.pow(10, d)).toString(); return fi ? s.replace('.', ',') : s; };
     var q = function (s) { s = String(s || ''); return /[";,\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
     var nc = data.car.capacityNew;
-    var rows = [['Päivämäärä', 'Km-lukema', 'Varaus ennen %', 'Varaus jälkeen %', 'Ladattu kWh', 'Ladattu %-yks', 'Kapasiteetti kWh', 'SOH %', 'Trendiin', 'Huomio', 'Lämpötila °C'].join(sep)];
-    sorted().forEach(function (e) {
+    var rows = [['Päivämäärä', 'Km-lukema', 'Varaus ennen %', 'Varaus jälkeen %', 'Ladattu kWh', 'Ladattu %-yks', 'Kapasiteetti kWh', 'SOH %', 'Trendiin', 'Huomio', 'Lämpötila °C (6 h ka)', 'Laturi', 'Vakioitu kapasiteetti kWh'].join(sep)];
+    var an = analyze();
+    an.evs.forEach(function (e) {
       var c = capacityOf(e);
-      rows.push([e.date, n(e.km, 0), n(e.socBefore, 1), n(e.socAfter, 1), n(e.kwh, 3), n(delta(e), 1), n(c, 2), nc ? n(c / nc * 100, 1) : '', isValid(e) ? 'kyllä' : 'ei', q(e.note), typeof e.temp === 'number' ? n(e.temp, 1) : ''].join(sep));
+      rows.push([e.date, n(e.km, 0), n(e.socBefore, 1), n(e.socAfter, 1), n(e.kwh, 3), n(delta(e), 1), n(c, 2), nc ? n(c / nc * 100, 1) : '', isValid(e) ? 'kyllä' : 'ei', q(e.note), typeof e.temp === 'number' ? n(e.temp, 1) : '', CHARGERS[chg(e)] || '', e._n !== null ? n(e._n, 2) : ''].join(sep));
     });
     return '﻿' + rows.join('\r\n') + '\r\n';
   }
@@ -751,7 +928,7 @@
     download(fileBase() + '.csv', csvText(), 'text/csv;charset=utf-8'); toast('CSV ladattu');
   });
   $('expJson').addEventListener('click', function () {
-    download(fileBase() + '.json', JSON.stringify({ app: 'akkukapasiteetti', version: 1, exported: new Date().toISOString(), data: data }, null, 2), 'application/json');
+    download(fileBase() + '.json', JSON.stringify({ app: 'akkukapasiteetti', version: 1, exported: new Date().toISOString(), data: data }, noPriv, 2), 'application/json');
     toast('Varmuuskopio ladattu');
   });
   try {
@@ -777,7 +954,7 @@
   function cleanEvent(e) {
     if (!e || typeof e !== 'object') return null;
     var o = { id: uid(), date: String(e.date || ''), km: num(e.km), socBefore: num(e.socBefore),
-      socAfter: num(e.socAfter), kwh: num(e.kwh), temp: tempVal(num(e.temp)), note: String(e.note || '').slice(0, 200) };
+      socAfter: num(e.socAfter), kwh: num(e.kwh), temp: tempVal(num(e.temp)), charger: CHARGERS[e.charger] ? e.charger : '', note: String(e.note || '').slice(0, 200) };
     if (!/^\d{4}-\d{2}-\d{2}$/.test(o.date) || !isFinite(o.km) || !(o.socBefore >= 0 && o.socAfter <= 100 && o.socAfter > o.socBefore) || !(o.kwh > 0)) return null;
     return o;
   }
@@ -787,6 +964,11 @@
     if (p && isFinite(num(p.lat)) && isFinite(num(p.lon))) out.place = { name: String(p.name || '').slice(0, 120), lat: round2(num(p.lat)), lon: round2(num(p.lon)) };
     if (out.mode === 'place' && !out.place) out.mode = 'off';
     return out;
+  }
+  function chargerKey(label) {
+    label = String(label || '').trim();
+    for (var k in CHARGERS) if (CHARGERS[k] === label || k === label) return k;
+    return '';
   }
   function importJson(txt) {
     var o = JSON.parse(txt), d = o.data || o;
@@ -819,7 +1001,7 @@
     var added = [];
     lines.slice(1).forEach(function (l) {
       var c = parse(l);
-      var e = { id: uid(), date: c[0], km: num(c[1]), socBefore: num(c[2]), socAfter: num(c[3]), kwh: num(c[4]), temp: tempVal(num(c[10])), note: (c[9] || '').slice(0, 200) };
+      var e = { id: uid(), date: c[0], km: num(c[1]), socBefore: num(c[2]), socAfter: num(c[3]), kwh: num(c[4]), temp: tempVal(num(c[10])), charger: chargerKey(c[11]), note: (c[9] || '').slice(0, 200) };
       if (/^\d{4}-\d{2}-\d{2}$/.test(e.date) && isFinite(e.km) && e.socAfter > e.socBefore && e.kwh > 0) added.push(e);
     });
     if (!added.length) throw new Error('ei kelvollisia rivejä');
