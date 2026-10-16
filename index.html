@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Akun kapasiteetti</title>
+<meta name="description" content="Sähköauton akun kapasiteetin seuranta lataustapahtumista">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0f1a24">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<script>
+  window.__installPrompt = null;
+  window.addEventListener('beforeinstallprompt', function (e) {
+    e.preventDefault();
+    window.__installPrompt = e;
+    document.dispatchEvent(new Event('installavailable'));
+  });
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(function () {});
+    });
+  }
+</script>
+<style>
+  :root {
+    --bg: #0f1a24;
+    --card: #182633;
+    --card2: #1f3242;
+    --text: #e8f0f6;
+    --muted: #8ea3b5;
+    --accent: #3ddc84;
+    --accent2: #2bb5e8;
+    --warn: #ffb547;
+    --danger: #ff6b6b;
+    --border: #2a4052;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 16px; line-height: 1.4;
+    padding: env(safe-area-inset-top) 0 calc(72px + env(safe-area-inset-bottom));
+    min-height: 100vh;
+  }
+  header {
+    position: sticky; top: 0; z-index: 5;
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 18px; margin: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  main { padding: 12px 16px; max-width: 720px; margin: 0 auto; }
+  .card { background: var(--card); border-radius: var(--radius); padding: 14px; margin-bottom: 12px; }
+  .card h2 { font-size: 15px; margin: 0 0 10px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .stat { background: var(--card2); border-radius: 12px; padding: 12px; }
+  .stat .v { font-size: 21px; font-weight: 700; }
+  .stat .l { font-size: 13px; color: var(--muted); }
+  .stat.big { grid-column: span 2; }
+  .stat.big .v { font-size: 34px; color: var(--accent); }
+  label { display: block; font-size: 14px; color: var(--muted); margin: 10px 0 4px; }
+  input, select, textarea {
+    width: 100%; font: inherit; color: var(--text);
+    background: var(--card2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px; min-height: 48px;
+  }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent2); border-color: transparent; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    font: inherit; font-weight: 600; border: 0; border-radius: 12px;
+    padding: 12px 16px; min-height: 48px; cursor: pointer;
+    background: var(--card2); color: var(--text);
+  }
+  .btn.primary { background: var(--accent); color: #062014; }
+  .btn.danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+  .btn.small { min-height: 36px; padding: 6px 12px; font-size: 14px; }
+  .btn.block { width: 100%; margin-top: 14px; }
+  .btn:disabled { opacity: .5; }
+  #installBtn { display: none; background: var(--accent2); color: #04202c; }
+  .preview { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: var(--card2); font-size: 15px; }
+  .preview b { color: var(--accent); }
+  .hint { font-size: 13px; color: var(--muted); margin: 6px 0 0; }
+  .warn { color: var(--warn); }
+  nav.tabs {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 10;
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    background: var(--card); border-top: 1px solid var(--border);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  nav.tabs button {
+    background: none; border: 0; color: var(--muted); font: inherit; font-size: 12px;
+    padding: 8px 0 10px; min-height: 60px; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  }
+  nav.tabs button svg { width: 24px; height: 24px; }
+  nav.tabs button.active { color: var(--accent); }
+  .view { display: none; }
+  .view.active { display: block; }
+  .ev { display: flex; gap: 10px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--border); }
+  .ev:last-child { border-bottom: 0; }
+  .ev .main { flex: 1; min-width: 0; }
+  .ev .cap { font-size: 20px; font-weight: 700; text-align: right; white-space: nowrap; }
+  .ev .cap small { display: block; font-size: 12px; font-weight: 400; color: var(--muted); }
+  .ev .meta { font-size: 13px; color: var(--muted); }
+  .ev.excluded .cap { color: var(--muted); }
+  .ev .btns .btn { flex: 0 0 auto; }
+  .chartwrap { position: relative; width: 100%; }
+  canvas { width: 100%; height: 260px; display: block; }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+  .seg { display: flex; background: var(--card2); border-radius: 10px; padding: 3px; margin-bottom: 8px; }
+  .seg button { flex: 1; background: none; border: 0; color: var(--muted); font: inherit; font-size: 14px; padding: 8px; border-radius: 8px; }
+  .seg button.active { background: var(--card); color: var(--text); font-weight: 600; }
+  .empty { text-align: center; color: var(--muted); padding: 24px 8px; }
+  .toast {
+    position: fixed; left: 50%; bottom: calc(84px + env(safe-area-inset-bottom)); transform: translateX(-50%);
+    background: #0b131b; color: var(--text); border: 1px solid var(--border);
+    padding: 10px 16px; border-radius: 10px; font-size: 14px; z-index: 30;
+    opacity: 0; pointer-events: none; transition: opacity .2s; max-width: 90vw; text-align: center;
+  }
+  .toast.show { opacity: 1; }
+  .btns { display: flex; flex-wrap: wrap; gap: 8px; }
+  .btns .btn { flex: 1 1 140px; }
+  dialog {
+    background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px; width: min(94vw, 480px);
+  }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Akun kapasiteetti</h1>
+  <button class="btn small" id="installBtn">Asenna</button>
+</header>
+
+<main>
+  <!-- YHTEENVETO -->
+  <section class="view active" id="view-summary">
+    <div class="card" id="setupNotice" hidden>
+      <h2>Aloita</h2>
+      <p>Syötä ensin auton tiedot ja akun nimelliskapasiteetti uutena.</p>
+      <button class="btn primary block" data-goto="car">Auton tiedot</button>
+    </div>
+    <div class="card">
+      <h2>Akun kunto</h2>
+      <div class="stats">
+        <div class="stat big"><div class="v" id="sSoh">–</div><div class="l" id="sSohL">Kunto (SOH) viimeisimpien latausten perusteella</div></div>
+        <div class="stat"><div class="v" id="sCap">–</div><div class="l">Arvioitu kapasiteetti</div></div>
+        <div class="stat"><div class="v" id="sNew">–</div><div class="l">Kapasiteetti uutena</div></div>
+        <div class="stat"><div class="v" id="sTrend">–</div><div class="l">Muutos / 10 000 km (trendi)</div></div>
+        <div class="stat"><div class="v" id="sProj">–</div><div class="l" id="sProjL">Arvio: 80 % kunto saavutetaan</div></div>
+      </div>
+      <p class="hint" id="sInfo"></p>
+    </div>
+    <div class="card">
+      <h2>Kapasiteetti ajokilometrien mukaan</h2>
+      <div class="seg" id="chartMode">
+        <button data-mode="km" class="active">km-lukema</button>
+        <button data-mode="date">Päivämäärä</button>
+      </div>
+      <div class="chartwrap"><canvas id="chart"></canvas></div>
+      <div class="legend">
+        <span><i style="background:var(--accent2)"></i>Lataus</span>
+        <span><i style="background:var(--muted)"></i>Pieni lataus (ei trendiin)</span>
+        <span><i style="background:var(--accent)"></i>Trendi</span>
+        <span><i style="background:var(--warn)"></i>Uutena</span>
+      </div>
+    </div>
+    <button class="btn primary block" data-goto="add">+ Uusi lataus</button>
+  </section>
+
+  <!-- UUSI LATAUS -->
+  <section class="view" id="view-add">
+    <form class="card" id="evForm" autocomplete="off">
+      <h2 id="evFormTitle">Uusi lataus</h2>
+      <input type="hidden" id="evId">
+      <div class="row">
+        <div><label for="evDate">Päivämäärä</label><input type="date" id="evDate" required></div>
+        <div><label for="evKm">Km-lukema</label><input type="number" id="evKm" inputmode="numeric" min="0" step="1" required></div>
+      </div>
+      <div class="row">
+        <div><label for="evBefore">Varaus ennen (%)</label><input type="number" id="evBefore" inputmode="decimal" min="0" max="100" step="any" required></div>
+        <div><label for="evAfter">Varaus jälkeen (%)</label><input type="number" id="evAfter" inputmode="decimal" min="0" max="100" step="any" required></div>
+      </div>
+      <label for="evKwh">Ladattu energia (kWh)</label>
+      <input type="number" id="evKwh" inputmode="decimal" min="0" step="any" required>
+      <label for="evNote">Huomio (valinnainen)</label>
+      <input type="text" id="evNote" maxlength="200" placeholder="esim. kotilaturi, pakkasta -10 °C">
+      <div class="preview" id="evPreview">Täytä tiedot, niin kapasiteetti lasketaan.</div>
+      <button class="btn primary block" type="submit" id="evSave">Tallenna lataus</button>
+      <button class="btn block" type="button" id="evCancel" hidden>Peruuta muokkaus</button>
+    </form>
+  </section>
+
+  <!-- LATAUKSET -->
+  <section class="view" id="view-list">
+    <div class="card">
+      <h2>Lataukset (<span id="evCount">0</span>)</h2>
+      <div id="evList"></div>
+    </div>
+  </section>
+
+  <!-- AUTO / ASETUKSET -->
+  <section class="view" id="view-car">
+    <form class="card" id="carForm" autocomplete="off">
+      <h2>Auton tiedot</h2>
+      <label for="carName">Auto</label>
+      <input type="text" id="carName" maxlength="60" placeholder="esim. Kia e-Niro 2021">
+      <label for="carCap">Akun käyttökelpoinen kapasiteetti uutena (kWh)</label>
+      <input type="number" id="carCap" inputmode="decimal" min="1" step="any" required>
+      <label for="carMin">Trendiin hyväksyttävä latauksen vähimmäiskoko (%-yksikköä)</label>
+      <input type="number" id="carMin" inputmode="numeric" min="1" max="100" step="1">
+      <p class="hint">Pienissä latauksissa prosenttilukeman pyöristys vääristää tulosta paljon. Nämä lataukset tallennetaan, mutta niitä ei käytetä kunto- ja trendilaskentaan.</p>
+      <button class="btn primary block" type="submit">Tallenna</button>
+    </form>
+
+    <div class="card">
+      <h2>Vie ja tuo tiedot</h2>
+      <label for="csvDec">CSV-muoto</label>
+      <select id="csvDec">
+        <option value="fi">Suomalainen (puolipiste, desimaalipilkku)</option>
+        <option value="en">Kansainvälinen (pilkku, desimaalipiste)</option>
+      </select>
+      <p class="hint">Google Sheetsissä: Tiedosto → Tuo → Lataa → valitse CSV. Valitse muoto, joka vastaa taulukon alueasetusta (Suomi = suomalainen).</p>
+      <div class="btns" style="margin-top:12px">
+        <button class="btn" id="expCsv">Lataa CSV</button>
+        <button class="btn" id="shareCsv" hidden>Jaa CSV</button>
+      </div>
+      <div class="btns" style="margin-top:8px">
+        <button class="btn" id="expJson">Varmuuskopio (JSON)</button>
+        <button class="btn" id="impBtn">Tuo tiedostosta</button>
+      </div>
+      <input type="file" id="impFile" accept=".json,.csv,application/json,text/csv" hidden>
+      <p class="hint">Tiedot tallentuvat vain tämän laitteen selaimeen. Ota varmuuskopio säännöllisesti – selaimen tietojen tyhjennys poistaa ne.</p>
+    </div>
+
+    <div class="card">
+      <h2>Laskentatapa</h2>
+      <p class="hint" style="margin:0">Kapasiteetti = ladattu kWh ÷ (varaus jälkeen − varaus ennen) × 100.<br>
+      Lämpötilaa ja lataushäviöitä ei huomioida. Laturin mittaama energia sisältää häviöt, joten arvo on yleensä hieman todellista suurempi – trendin seurantaan tämä ei vaikuta, kun lataat samalla tavalla.<br>
+      Kunto (SOH) lasketaan viiden viimeisimmän hyväksytyn latauksen painotettuna keskiarvona (isommat lataukset painavat enemmän). Trendi on lineaarinen regressio km-lukeman suhteen.</p>
+    </div>
+
+    <div class="card">
+      <h2>Vaarallinen alue</h2>
+      <button class="btn danger block" id="wipe" style="margin-top:0">Poista kaikki tiedot</button>
+    </div>
+  </section>
+</main>
+
+<nav class="tabs">
+  <button data-view="summary" class="active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="7" width="16" height="10" rx="2"/><path d="M21 10v4"/><path d="M6 10v4M9 10v4M12 10v4"/></svg>Kunto</button>
+  <button data-view="add"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>Lataus</button>
+  <button data-view="list"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>Historia</button>
+  <button data-view="car"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 17h14v-5l-2-5H7l-2 5z"/><circle cx="8" cy="17" r="2"/><circle cx="16" cy="17" r="2"/></svg>Auto</button>
+</nav>
+
+<div class="toast" id="toast"></div>
+
+<dialog id="confirmDlg">
+  <p id="confirmMsg"></p>
+  <div class="btns">
+    <button class="btn" id="confirmNo">Peruuta</button>
+    <button class="btn danger" id="confirmYes">Vahvista</button>
+  </div>
+</dialog>
+
+<script>
+(function () {
+  'use strict';
+  var STORE_KEY = 'akkukapasiteetti-data-v1';
+  var PREF_KEY = 'akkukapasiteetti-prefs-v1';
+  var $ = function (id) { return document.getElementById(id); };
+
+  // ---------- Tietovarasto ----------
+  function emptyData() { return { car: { name: '', capacityNew: null, minDelta: 20 }, events: [] }; }
+  function load() {
+    try {
+      var d = JSON.parse(localStorage.getItem(STORE_KEY));
+      if (d && d.car && Array.isArray(d.events)) return d;
+    } catch (e) {}
+    return emptyData();
+  }
+  var data = load();
+  function save() {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(data)); }
+    catch (e) { toast('Tallennus epäonnistui: ' + e.message); }
+  }
+  var prefs = (function () { try { return JSON.parse(localStorage.getItem(PREF_KEY)) || {}; } catch (e) { return {}; } })();
+  function savePrefs() { try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); } catch (e) {} }
+
+  // ---------- Apurit ----------
+  function num(v) { if (v === '' || v == null) return NaN; return parseFloat(String(v).replace(',', '.')); }
+  function fmt(n, d) { return isFinite(n) ? n.toLocaleString('fi-FI', { minimumFractionDigits: d, maximumFractionDigits: d }) : '–'; }
+  function fmtDate(s) { if (!s) return ''; var p = s.split('-'); return +p[2] + '.' + +p[1] + '.' + p[0]; }
+  function today() { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+  function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  var toastT;
+  function toast(msg) { var t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(function () { t.classList.remove('show'); }, 2600); }
+  function confirmBox(msg) {
+    return new Promise(function (res) {
+      var dlg = $('confirmDlg'); $('confirmMsg').textContent = msg;
+      function done(v) { dlg.close(); $('confirmYes').onclick = $('confirmNo').onclick = null; res(v); }
+      $('confirmYes').onclick = function () { done(true); };
+      $('confirmNo').onclick = function () { done(false); };
+      dlg.showModal();
+    });
+  }
+
+  // ---------- Laskenta ----------
+  function delta(e) { return e.socAfter - e.socBefore; }
+  function capacityOf(e) { var d = delta(e); return d > 0 ? e.kwh / d * 100 : NaN; }
+  function minDelta() { return data.car.minDelta || 20; }
+  function isValid(e) { return delta(e) >= minDelta() && isFinite(capacityOf(e)); }
+  function sorted() {
+    return data.events.slice().sort(function (a, b) { return (a.km - b.km) || (a.date < b.date ? -1 : a.date > b.date ? 1 : 0); });
+  }
+  function regression(pts) { // pts: [{x,y}]
+    var n = pts.length; if (n < 2) return null;
+    var sx = 0, sy = 0, sxx = 0, sxy = 0;
+    pts.forEach(function (p) { sx += p.x; sy += p.y; sxx += p.x * p.x; sxy += p.x * p.y; });
+    var den = n * sxx - sx * sx; if (den === 0) return null;
+    var b = (n * sxy - sx * sy) / den; return { slope: b, intercept: (sy - b * sx) / n };
+  }
+  function analyze() {
+    var evs = sorted(), valid = evs.filter(isValid);
+    var recent = valid.slice(-5), wsum = 0, csum = 0;
+    recent.forEach(function (e) { var w = delta(e); wsum += w; csum += capacityOf(e) * w; });
+    var cap = wsum ? csum / wsum : NaN;
+    var reg = null, kmSpan = 0;
+    if (valid.length >= 3) {
+      kmSpan = valid[valid.length - 1].km - valid[0].km;
+      if (kmSpan >= 500) reg = regression(valid.map(function (e) { return { x: e.km, y: capacityOf(e) }; }));
+    }
+    return { evs: evs, valid: valid, cap: cap, reg: reg, kmSpan: kmSpan };
+  }
+
+  // ---------- Näkymät ----------
+  function show(view) {
+    document.querySelectorAll('.view').forEach(function (v) { v.classList.toggle('active', v.id === 'view-' + view); });
+    document.querySelectorAll('nav.tabs button').forEach(function (b) { b.classList.toggle('active', b.dataset.view === view); });
+    window.scrollTo(0, 0);
+    if (view === 'summary') renderSummary();
+    if (view === 'list') renderList();
+    if (view === 'add' && !$('evId').value) resetForm();
+  }
+  document.querySelectorAll('nav.tabs button').forEach(function (b) { b.addEventListener('click', function () { show(b.dataset.view); }); });
+  document.querySelectorAll('[data-goto]').forEach(function (b) { b.addEventListener('click', function () { show(b.dataset.goto); }); });
+
+  function renderSummary() {
+    var newCap = data.car.capacityNew;
+    $('title').textContent = data.car.name || 'Akun kapasiteetti';
+    $('setupNotice').hidden = !!newCap;
+    var a = analyze();
+    $('sNew').textContent = newCap ? fmt(newCap, 1) + ' kWh' : '–';
+    $('sCap').textContent = isFinite(a.cap) ? fmt(a.cap, 1) + ' kWh' : '–';
+    $('sSoh').textContent = isFinite(a.cap) && newCap ? fmt(a.cap / newCap * 100, 1) + ' %' : '–';
+    var info = [];
+    info.push(a.evs.length + ' latausta, joista ' + a.valid.length + ' käytetään laskentaan (vähintään ' + minDelta() + ' %-yksikön lataukset).');
+    if (a.reg) {
+      var per10k = a.reg.slope * 10000;
+      var pct = newCap ? per10k / newCap * 100 : NaN;
+      $('sTrend').textContent = (per10k > 0 ? '+' : '') + fmt(per10k, 2) + ' kWh' ;
+      if (isFinite(pct)) $('sTrend').textContent += ' (' + (pct > 0 ? '+' : '') + fmt(pct, 1) + ' %)';
+      if (newCap && a.reg.slope < 0) {
+        var km80 = (0.8 * newCap - a.reg.intercept) / a.reg.slope;
+        var lastKm = a.evs[a.evs.length - 1].km;
+        $('sProj').textContent = km80 <= lastKm ? 'saavutettu' : fmt(Math.round(km80 / 1000) * 1000, 0) + ' km';
+      } else $('sProj').textContent = '–';
+    } else {
+      $('sTrend').textContent = '–'; $('sProj').textContent = '–';
+      info.push('Trendi lasketaan, kun hyväksyttyjä latauksia on vähintään 3 ja niiden välillä vähintään 500 km.');
+    }
+    if (a.reg && a.kmSpan < 10000) info.push('Trendi on vielä epävarma lyhyen km-välin (' + fmt(a.kmSpan, 0) + ' km) vuoksi.');
+    $('sInfo').textContent = info.join(' ');
+    drawChart(a);
+  }
+
+  // ---------- Kaavio ----------
+  var chartMode = prefs.chartMode || 'km';
+  document.querySelectorAll('#chartMode button').forEach(function (b) {
+    b.classList.toggle('active', b.dataset.mode === chartMode);
+    b.addEventListener('click', function () {
+      chartMode = b.dataset.mode; prefs.chartMode = chartMode; savePrefs();
+      document.querySelectorAll('#chartMode button').forEach(function (x) { x.classList.toggle('active', x === b); });
+      drawChart(analyze());
+    });
+  });
+  function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+  function niceStep(range, target) {
+    var raw = range / target, mag = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / mag;
+    return (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * mag;
+  }
+  function drawChart(a) {
+    var cv = $('chart'), dpr = window.devicePixelRatio || 1;
+    var W = cv.clientWidth, H = cv.clientHeight;
+    if (!W) return;
+    cv.width = W * dpr; cv.height = H * dpr;
+    var ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
+    var muted = cssVar('--muted'), border = cssVar('--border');
+    ctx.font = '12px system-ui, sans-serif';
+    var evs = a.evs.filter(function (e) { return isFinite(capacityOf(e)); });
+    if (!evs.length) {
+      ctx.fillStyle = muted; ctx.textAlign = 'center';
+      ctx.fillText('Ei vielä latauksia', W / 2, H / 2); return;
+    }
+    var xOf = chartMode === 'km' ? function (e) { return e.km; } : function (e) { return Date.parse(e.date); };
+    var xs = evs.map(xOf), ys = evs.map(capacityOf);
+    var newCap = data.car.capacityNew;
+    var yMin = Math.min.apply(null, ys), yMax = Math.max.apply(null, ys);
+    if (newCap) { yMin = Math.min(yMin, newCap); yMax = Math.max(yMax, newCap); }
+    var pad = Math.max((yMax - yMin) * 0.1, 1); yMin -= pad; yMax += pad;
+    var xMin = Math.min.apply(null, xs), xMax = Math.max.apply(null, xs);
+    if (xMax === xMin) { var xp = chartMode === 'km' ? 1000 : 86400000 * 15; xMin -= xp; xMax += xp; }
+    var L = 44, R = 10, T = 10, B = 26, pw = W - L - R, ph = H - T - B;
+    var X = function (v) { return L + (v - xMin) / (xMax - xMin) * pw; };
+    var Y = function (v) { return T + (1 - (v - yMin) / (yMax - yMin)) * ph; };
+    // ruudukko
+    ctx.strokeStyle = border; ctx.lineWidth = 1; ctx.fillStyle = muted;
+    var ys_ = niceStep(yMax - yMin, 5);
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    for (var y = Math.ceil(yMin / ys_) * ys_; y <= yMax; y += ys_) {
+      ctx.beginPath(); ctx.moveTo(L, Y(y)); ctx.lineTo(W - R, Y(y)); ctx.stroke();
+      ctx.fillText(fmt(y, ys_ < 1 ? 1 : 0), L - 6, Y(y));
+    }
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    if (chartMode === 'km') {
+      var xs_ = niceStep(xMax - xMin, Math.max(2, Math.floor(pw / 80)));
+      for (var x = Math.ceil(xMin / xs_) * xs_; x <= xMax; x += xs_) {
+        ctx.fillText(x >= 1000 ? fmt(x / 1000, xs_ < 1000 ? 1 : 0) + 'k' : fmt(x, 0), X(x), H - B + 6);
+      }
+    } else {
+      var nT = Math.max(2, Math.floor(pw / 90));
+      for (var i = 0; i <= nT; i++) {
+        var t = xMin + (xMax - xMin) * i / nT, d = new Date(t);
+        ctx.fillText((d.getMonth() + 1) + '/' + String(d.getFullYear()).slice(2), X(t), H - B + 6);
+      }
+    }
+    // uutena-viiva
+    if (newCap) {
+      ctx.strokeStyle = cssVar('--warn'); ctx.setLineDash([5, 4]);
+      ctx.beginPath(); ctx.moveTo(L, Y(newCap)); ctx.lineTo(W - R, Y(newCap)); ctx.stroke(); ctx.setLineDash([]);
+    }
+    // trendi
+    var reg = a.reg;
+    if (chartMode === 'date' && a.valid.length >= 3) {
+      reg = regression(a.valid.map(function (e) { return { x: Date.parse(e.date), y: capacityOf(e) }; }));
+    }
+    if (reg && (chartMode === 'km' || a.reg)) {
+      ctx.strokeStyle = cssVar('--accent'); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(X(xMin), Y(reg.intercept + reg.slope * xMin)); ctx.lineTo(X(xMax), Y(reg.intercept + reg.slope * xMax)); ctx.stroke();
+    }
+    // pisteet
+    evs.forEach(function (e) {
+      ctx.fillStyle = isValid(e) ? cssVar('--accent2') : muted;
+      ctx.beginPath(); ctx.arc(X(xOf(e)), Y(capacityOf(e)), isValid(e) ? 4.5 : 3, 0, Math.PI * 2); ctx.fill();
+    });
+  }
+  window.addEventListener('resize', function () { if ($('view-summary').classList.contains('active')) drawChart(analyze()); });
+
+  // ---------- Latauslomake ----------
+  function lastEvent() { var s = sorted(); return s[s.length - 1]; }
+  function resetForm() {
+    $('evForm').reset(); $('evId').value = '';
+    $('evDate').value = today();
+    var le = lastEvent(); $('evKm').placeholder = le ? 'edellinen ' + le.km : '';
+    $('evFormTitle').textContent = 'Uusi lataus'; $('evSave').textContent = 'Tallenna lataus';
+    $('evCancel').hidden = true; updatePreview();
+  }
+  function formValues() {
+    return { date: $('evDate').value, km: num($('evKm').value), socBefore: num($('evBefore').value),
+      socAfter: num($('evAfter').value), kwh: num($('evKwh').value), note: $('evNote').value.trim() };
+  }
+  function updatePreview() {
+    var v = formValues(), p = $('evPreview');
+    if (!isFinite(v.socBefore) || !isFinite(v.socAfter) || !isFinite(v.kwh)) { p.innerHTML = 'Täytä tiedot, niin kapasiteetti lasketaan.'; return; }
+    var d = v.socAfter - v.socBefore;
+    if (d <= 0) { p.innerHTML = '<span class="warn">Varauksen jälkeen pitää olla suurempi kuin ennen.</span>'; return; }
+    var c = v.kwh / d * 100, nc = data.car.capacityNew;
+    var html = 'Laskettu kapasiteetti: <b>' + fmt(c, 1) + ' kWh</b>';
+    if (nc) html += ' (' + fmt(c / nc * 100, 1) + ' % uudesta)';
+    if (d < minDelta()) html += '<br><span class="warn">Lataus on alle ' + minDelta() + ' %-yksikköä – tallennetaan, mutta ei käytetä trendiin.</span>';
+    if (nc && (c > nc * 1.25 || c < nc * 0.5)) html += '<br><span class="warn">Arvo poikkeaa paljon nimelliskapasiteetista – tarkista luvut.</span>';
+    p.innerHTML = html;
+  }
+  ['evBefore', 'evAfter', 'evKwh'].forEach(function (id) { $(id).addEventListener('input', updatePreview); });
+  $('evForm').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var v = formValues();
+    if (!v.date || !isFinite(v.km) || v.km < 0) return toast('Tarkista päivämäärä ja km-lukema');
+    if (!(v.socBefore >= 0 && v.socAfter <= 100 && v.socAfter > v.socBefore)) return toast('Tarkista varausprosentit');
+    if (!(v.kwh > 0)) return toast('Tarkista ladattu energia');
+    var id = $('evId').value;
+    if (id) {
+      var e = data.events.find(function (x) { return x.id === id; });
+      if (e) Object.assign(e, v);
+      toast('Lataus päivitetty');
+    } else {
+      v.id = uid(); data.events.push(v);
+      toast('Tallennettu: ' + fmt(capacityOf(v), 1) + ' kWh');
+    }
+    save(); $('evId').value = ''; show(id ? 'list' : 'summary');
+  });
+  $('evCancel').addEventListener('click', function () { $('evId').value = ''; show('list'); });
+
+  function editEvent(id) {
+    var e = data.events.find(function (x) { return x.id === id; }); if (!e) return;
+    $('evId').value = e.id; $('evDate').value = e.date; $('evKm').value = e.km;
+    $('evBefore').value = e.socBefore; $('evAfter').value = e.socAfter; $('evKwh').value = e.kwh; $('evNote').value = e.note || '';
+    $('evFormTitle').textContent = 'Muokkaa latausta'; $('evSave').textContent = 'Tallenna muutokset'; $('evCancel').hidden = false;
+    updatePreview(); show('add');
+  }
+
+  // ---------- Lista ----------
+  function renderList() {
+    var evs = sorted().reverse(), nc = data.car.capacityNew;
+    $('evCount').textContent = evs.length;
+    if (!evs.length) { $('evList').innerHTML = '<div class="empty">Ei vielä latauksia.</div>'; return; }
+    $('evList').innerHTML = evs.map(function (e) {
+      var c = capacityOf(e), ok = isValid(e);
+      return '<div class="ev' + (ok ? '' : ' excluded') + '">' +
+        '<div class="main"><div>' + esc(fmtDate(e.date)) + ' · ' + fmt(e.km, 0) + ' km</div>' +
+        '<div class="meta">' + fmt(e.socBefore, 0) + ' → ' + fmt(e.socAfter, 0) + ' % · ' + fmt(e.kwh, 2) + ' kWh' + (ok ? '' : ' · ei trendiin') + '</div>' +
+        (e.note ? '<div class="meta">' + esc(e.note) + '</div>' : '') +
+        '<div class="btns" style="margin-top:6px"><button class="btn small" data-edit="' + e.id + '">Muokkaa</button>' +
+        '<button class="btn small" data-del="' + e.id + '" style="color:var(--danger)">Poista</button></div></div>' +
+        '<div class="cap">' + fmt(c, 1) + '<small>kWh' + (nc ? ' · ' + fmt(c / nc * 100, 0) + ' %' : '') + '</small></div></div>';
+    }).join('');
+  }
+  $('evList').addEventListener('click', function (ev) {
+    var b = ev.target.closest('button'); if (!b) return;
+    if (b.dataset.edit) editEvent(b.dataset.edit);
+    if (b.dataset.del) confirmBox('Poistetaanko tämä lataus?').then(function (ok) {
+      if (!ok) return;
+      data.events = data.events.filter(function (x) { return x.id !== b.dataset.del; });
+      save(); renderList(); toast('Lataus poistettu');
+    });
+  });
+
+  // ---------- Auto ----------
+  function fillCar() {
+    $('carName').value = data.car.name || '';
+    $('carCap').value = data.car.capacityNew || '';
+    $('carMin').value = data.car.minDelta || 20;
+    $('csvDec').value = prefs.csv || 'fi';
+  }
+  $('carForm').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var cap = num($('carCap').value), md = parseInt($('carMin').value, 10);
+    if (!(cap > 0)) return toast('Anna kapasiteetti kWh:na');
+    data.car.name = $('carName').value.trim(); data.car.capacityNew = cap;
+    data.car.minDelta = md >= 1 && md <= 100 ? md : 20;
+    save(); toast('Auton tiedot tallennettu'); show('summary');
+  });
+  $('csvDec').addEventListener('change', function () { prefs.csv = this.value; savePrefs(); });
+
+  // ---------- Vienti ----------
+  function csvText() {
+    var fi = ($('csvDec').value || 'fi') === 'fi', sep = fi ? ';' : ',';
+    var n = function (v, d) { if (!isFinite(v)) return ''; var s = (Math.round(v * Math.pow(10, d)) / Math.pow(10, d)).toString(); return fi ? s.replace('.', ',') : s; };
+    var q = function (s) { s = String(s || ''); return /[";,\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    var nc = data.car.capacityNew;
+    var rows = [['Päivämäärä', 'Km-lukema', 'Varaus ennen %', 'Varaus jälkeen %', 'Ladattu kWh', 'Ladattu %-yks', 'Kapasiteetti kWh', 'SOH %', 'Trendiin', 'Huomio'].join(sep)];
+    sorted().forEach(function (e) {
+      var c = capacityOf(e);
+      rows.push([e.date, n(e.km, 0), n(e.socBefore, 1), n(e.socAfter, 1), n(e.kwh, 3), n(delta(e), 1), n(c, 2), nc ? n(c / nc * 100, 1) : '', isValid(e) ? 'kyllä' : 'ei', q(e.note)].join(sep));
+    });
+    return '﻿' + rows.join('\r\n') + '\r\n';
+  }
+  function fileBase() { return 'akun-kapasiteetti-' + today(); }
+  function download(name, text, type) {
+    var blob = new Blob([text], { type: type }), url = URL.createObjectURL(blob), a = document.createElement('a');
+    a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+  }
+  $('expCsv').addEventListener('click', function () {
+    if (!data.events.length) return toast('Ei vietävää');
+    download(fileBase() + '.csv', csvText(), 'text/csv;charset=utf-8'); toast('CSV ladattu');
+  });
+  $('expJson').addEventListener('click', function () {
+    download(fileBase() + '.json', JSON.stringify({ app: 'akkukapasiteetti', version: 1, exported: new Date().toISOString(), data: data }, null, 2), 'application/json');
+    toast('Varmuuskopio ladattu');
+  });
+  try {
+    var testFile = new File(['x'], 'x.csv', { type: 'text/csv' });
+    if (navigator.canShare && navigator.canShare({ files: [testFile] })) $('shareCsv').hidden = false;
+  } catch (e) {}
+  $('shareCsv').addEventListener('click', function () {
+    if (!data.events.length) return toast('Ei vietävää');
+    var f = new File([csvText()], fileBase() + '.csv', { type: 'text/csv' });
+    navigator.share({ files: [f], title: 'Akun kapasiteetti' }).catch(function () {});
+  });
+
+  // ---------- Tuonti ----------
+  $('impBtn').addEventListener('click', function () { $('impFile').value = ''; $('impFile').click(); });
+  $('impFile').addEventListener('change', function () {
+    var f = this.files[0]; if (!f) return;
+    f.text().then(function (txt) {
+      if (/\.json$/i.test(f.name) || txt.trim().charAt(0) === '{') return importJson(txt);
+      return importCsv(txt);
+    }).catch(function (e) { toast('Tuonti epäonnistui: ' + e.message); });
+  });
+  function importJson(txt) {
+    var o = JSON.parse(txt), d = o.data || o;
+    if (!d.car || !Array.isArray(d.events)) throw new Error('tuntematon tiedosto');
+    return confirmBox('Korvataanko nykyiset tiedot varmuuskopiolla (' + d.events.length + ' latausta)?').then(function (ok) {
+      if (!ok) return;
+      data = { car: Object.assign(emptyData().car, d.car), events: d.events.map(function (e) { return Object.assign({ id: uid() }, e); }) };
+      save(); fillCar(); toast('Tiedot palautettu'); show('summary');
+    });
+  }
+  function importCsv(txt) {
+    txt = txt.replace(/^﻿/, '');
+    var lines = txt.split(/\r?\n/).filter(function (l) { return l.trim(); });
+    if (lines.length < 2) throw new Error('tyhjä CSV');
+    var sep = lines[0].indexOf(';') >= 0 ? ';' : ',';
+    var parse = function (line) {
+      var out = [], cur = '', inQ = false;
+      for (var i = 0; i < line.length; i++) {
+        var ch = line[i];
+        if (inQ) { if (ch === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else inQ = false; } else cur += ch; }
+        else if (ch === '"') inQ = true; else if (ch === sep) { out.push(cur); cur = ''; } else cur += ch;
+      }
+      out.push(cur); return out;
+    };
+    var added = [];
+    lines.slice(1).forEach(function (l) {
+      var c = parse(l);
+      var e = { id: uid(), date: c[0], km: num(c[1]), socBefore: num(c[2]), socAfter: num(c[3]), kwh: num(c[4]), note: c[9] || '' };
+      if (/^\d{4}-\d{2}-\d{2}$/.test(e.date) && isFinite(e.km) && e.socAfter > e.socBefore && e.kwh > 0) added.push(e);
+    });
+    if (!added.length) throw new Error('ei kelvollisia rivejä');
+    var key = function (e) { return e.date + '|' + e.km + '|' + e.socBefore + '|' + e.socAfter + '|' + e.kwh; };
+    var have = {}; data.events.forEach(function (e) { have[key(e)] = 1; });
+    var fresh = added.filter(function (e) { return !have[key(e)]; });
+    return confirmBox('Lisätäänkö CSV:stä ' + fresh.length + ' uutta latausta' + (added.length - fresh.length ? ' (' + (added.length - fresh.length) + ' jo olemassa)' : '') + '?').then(function (ok) {
+      if (!ok) return;
+      data.events = data.events.concat(fresh); save(); toast(fresh.length + ' latausta tuotu'); show('summary');
+    });
+  }
+
+  $('wipe').addEventListener('click', function () {
+    confirmBox('Poistetaanko kaikki auton tiedot ja lataukset pysyvästi? Ota ensin varmuuskopio.').then(function (ok) {
+      if (!ok) return;
+      try { localStorage.removeItem(STORE_KEY); } catch (e) {}
+      data = emptyData(); fillCar(); toast('Tiedot poistettu'); show('summary');
+    });
+  });
+
+  // ---------- Asennus ----------
+  function updateInstall() { $('installBtn').style.display = window.__installPrompt ? 'inline-flex' : 'none'; }
+  document.addEventListener('installavailable', updateInstall);
+  window.addEventListener('appinstalled', function () { window.__installPrompt = null; updateInstall(); });
+  $('installBtn').addEventListener('click', function () {
+    var p = window.__installPrompt; if (!p) return;
+    p.prompt();
+    p.userChoice.finally(function () { window.__installPrompt = null; updateInstall(); });
+  });
+  updateInstall();
+
+  // ---------- Käynnistys ----------
+  fillCar();
+  show(data.car.capacityNew ? 'summary' : 'car');
+})();
+</script>
+</body>
+</html>
