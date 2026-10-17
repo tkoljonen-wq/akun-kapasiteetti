@@ -283,9 +283,12 @@
         <button type="button" role="radio" data-v="dc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>Pikalaturi</button>
       </div>
       <div class="row">
-        <div><label for="evDate">Päivämäärä</label><input type="date" id="evDate" required></div>
-        <div><label for="evKm">Km-lukema</label><input type="number" id="evKm" inputmode="numeric" min="0" step="1" required></div>
+        <div><label for="evDate">Aloituspäivä</label><input type="date" id="evDate" required></div>
+        <div><label for="evTime">Aloitusaika</label><input type="time" id="evTime"></div>
       </div>
+      <p class="hint" style="margin-top:4px">Ajastetulle lataukselle syötä ajastettu alkamisaika – lämpötila haetaan sen mukaan.</p>
+      <label for="evKm">Km-lukema</label>
+      <input type="number" id="evKm" inputmode="numeric" min="0" step="1" required>
       <div class="row">
         <div><label for="evBefore">Varaus ennen (%)</label><input type="number" id="evBefore" inputmode="decimal" min="0" max="100" step="any" required></div>
         <div><label for="evAfter">Varaus jälkeen (%)</label><input type="number" id="evAfter" inputmode="decimal" min="0" max="100" step="any" required></div>
@@ -301,7 +304,7 @@
       <label for="evNote">Muistiinpanot (valinnainen)</label>
       <input type="text" id="evNote" maxlength="200" placeholder="esim. latauspaikka, lämmin talli, esilämmitys">
       <div class="preview" id="evPreview">Täytä tiedot, niin kapasiteetti lasketaan.</div>
-      <p class="hint" id="evStartHint">Voit tallentaa alkutiedot (päivämäärä, km-lukema ja varaus ennen) heti latauksen alussa ja täydentää loput, kun lataus on valmis.</p>
+      <p class="hint" id="evStartHint">Voit tallentaa alkutiedot (aloitusaika, km-lukema ja varaus ennen) heti latauksen alussa tai ajastusta tehdessä ja täydentää varauksen jälkeen ja ladatun energian, kun lataus on valmis.</p>
       <button class="btn primary block" type="submit" id="evSave">Tallenna lataus</button>
       <button class="btn block" type="button" id="evStart">Aloita lataus – tallenna alkutiedot</button>
       <button class="btn danger block" type="button" id="evDiscard" hidden>Hylkää keskeneräinen lataus</button>
@@ -442,6 +445,8 @@
   function fmt(n, d) { return isFinite(n) ? n.toLocaleString('fi-FI', { minimumFractionDigits: d, maximumFractionDigits: d }) : '–'; }
   function fmtDate(s) { if (!s) return ''; var p = s.split('-'); return +p[2] + '.' + +p[1] + '.' + p[0]; }
   function today() { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  function nowTime() { var d = new Date(); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
+  function fmtWhen(date, time) { return fmtDate(date) + (time ? ' klo ' + time : ''); }
   function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
   function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   var toastT;
@@ -621,7 +626,7 @@
     $('pendingDriveNotice').hidden = !pdd;
     $('newDriveBtn').hidden = !!pdd;
     if (pdd) $('pendingDriveInfo').textContent = 'Aloitettu ' + fmtDate(pdd.date) + ' · matkamittari ' + fmt(pdd.odo, 0) + ' km · varaus ' + fmt(pdd.socStart, 0) + ' %' + (typeof pdd.tempStart === 'number' ? ' · ' + fmt(pdd.tempStart, 1) + ' °C' : '') + '. Syötä lopuksi matka, keskinopeus ja varaus.';
-    if (pd) $('pendingInfo').textContent = 'Aloitettu ' + fmtDate(pd.date) + ' · ' + fmt(pd.km, 0) + ' km · varaus ' + fmt(pd.socBefore, 0) + ' %. Syötä lopuksi varaus jälkeen ja ladattu kWh.';
+    if (pd) $('pendingInfo').textContent = ((pd.time && new Date(pd.date + 'T' + pd.time) > new Date()) ? 'Ajastettu alkamaan ' : 'Aloitettu ') + fmtWhen(pd.date, pd.time) + ' · ' + fmt(pd.km, 0) + ' km · varaus ' + fmt(pd.socBefore, 0) + ' %. Syötä lopuksi varaus jälkeen ja ladattu kWh.';
     var a = analyze(), m = a.m, inf = a.info;
     var refTxt = (m && m.useT ? '+15 °C, ' : '') + (inf.ref ? lcFirst(chargerName(inf.ref)) : 'sama laturi');
     $('sNew').textContent = newCap ? fmt(newCap, 1) + ' kWh' : '–';
@@ -813,22 +818,75 @@
       return { now: now, mean: mean };
     });
   }
+  function hourKey(d) {
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + 'T' + String(d.getHours()).padStart(2, '0') + ':00';
+  }
+  // 6 h keskilämpötilat annettuihin hetkiin päättyen (menneet havaintoina, tulevat ennusteena; enintään 92 vrk taaksepäin).
+  function fetchTempsAt(times) {
+    return getCoords().then(function (c) {
+      var now = Date.now(), ms = times.map(function (d) { return d.getTime(); });
+      var past = Math.ceil((now - Math.min.apply(null, ms) + 7 * 3600e3) / 864e5) + 1;
+      var fut = Math.ceil((Math.max.apply(null, ms) - now) / 864e5) + 1;
+      if (past > 92) throw new Error('Säätietoja ei saatavilla yli 3 kk takaa');
+      if (fut > 16) throw new Error('Ennustetta ei saatavilla yli 2 viikon päähän');
+      var url = 'https://api.open-meteo.com/v1/forecast?latitude=' + c.lat + '&longitude=' + c.lon +
+        '&current=temperature_2m&hourly=temperature_2m&past_days=' + Math.max(1, past) + '&forecast_days=' + Math.max(1, fut) + '&timezone=auto';
+      return fetch(url, { cache: 'no-store' });
+    }).then(function (r) {
+      if (!r.ok) throw new Error('Sääpalvelu ei vastannut');
+      return r.json();
+    }).then(function (j) {
+      var h = (j && j.hourly) || {}, vals = h.temperature_2m || [], map = {};
+      (h.time || []).forEach(function (tm, i) { if (typeof vals[i] === 'number') map[tm] = vals[i]; });
+      var means = times.map(function (d) {
+        var vs = [];
+        for (var k = 0; k < 6; k++) { var v = map[hourKey(new Date(d.getTime() - k * 3600e3))]; if (typeof v === 'number') vs.push(v); }
+        if (!vs.length) throw new Error('Lämpötilaa ei saatu');
+        return vs.reduce(function (s, v) { return s + v; }, 0) / vs.length;
+      });
+      return { now: j.current && j.current.temperature_2m, means: means };
+    });
+  }
+  function startMoment() {
+    var d = $('evDate').value, t = $('evTime').value;
+    if (!d || !t) return null;
+    var x = new Date(d + 'T' + t);
+    return isNaN(x) ? null : x;
+  }
   var tempReq = 0;
-  // Hakee lämpötilan lomakkeelle. Keskeneräisessä latauksessa kenttään tulee alun ja lopun keskiarvo.
+  // Hakee lämpötilan lomakkeelle. Lataus = keskiarvo aloitushetken ja nykyhetken (lopun) 6 h keskiarvoista.
+  // Tuleva aloitushetki (ajastettu lataus) käyttää ennustetta; lopullinen arvo haetaan, kun lataus kirjataan valmiiksi.
   function fillTemp(manual) {
     var my = ++tempReq, btn = $('evTempBtn');
     btn.disabled = true; btn.textContent = '…';
-    return fetchTemp().then(function (r) {
+    var editing = !!$('evId').value, S = startMoment(), now = new Date(), req, describe;
+    if (!S) {
+      var pd = data.pending, start = pd && typeof pd.temp === 'number' && !editing ? pd.temp : null;
+      req = fetchTemp().then(function (r) { return { now: r.now, means: [r.mean] }; });
+      describe = function (r) {
+        var t = r.means[0];
+        if (start === null) return [t, '6 h keskiarvo ' + fmt(t, 1) + ' °C (lämpötila nyt ' + fmt(r.now, 1) + ' °C)'];
+        return [(start + t) / 2, '6 h keskiarvo alussa ' + fmt(start, 1) + ' °C ja nyt ' + fmt(t, 1) + ' °C – kentässä näiden keskiarvo (lämpötila nyt ' + fmt(r.now, 1) + ' °C).'];
+      };
+    } else if (editing || S > now || now - S > 24 * 3600e3) {
+      req = fetchTempsAt([S]);
+      describe = function (r) {
+        var t = r.means[0];
+        return [t, S > now ? 'Ennuste: 6 h keskiarvo aloitushetkellä ' + fmt(t, 1) + ' °C. Toteutunut lämpötila haetaan, kun kirjaat latauksen valmiiksi.'
+          : '6 h keskiarvo aloitushetkellä ' + fmt(t, 1) + ' °C' + (editing ? '' : ' (alkuun yli vuorokausi – lopetushetkeä ei käytetä)')];
+      };
+    } else {
+      req = fetchTempsAt([S, now]);
+      describe = function (r) {
+        var a = r.means[0], b = r.means[1];
+        return [(a + b) / 2, '6 h keskiarvo aloitushetkellä ' + fmt(a, 1) + ' °C ja nyt ' + fmt(b, 1) + ' °C – kentässä näiden keskiarvo' + (typeof r.now === 'number' ? ' (lämpötila nyt ' + fmt(r.now, 1) + ' °C)' : '') + '.'];
+      };
+    }
+    return req.then(function (r) {
       if (my !== tempReq) return;
-      var t = r.mean;
-      var pd = data.pending, start = pd && typeof pd.temp === 'number' && !$('evId').value ? pd.temp : null;
-      if (start !== null) {
-        $('evTemp').value = Math.round((start + t) / 2 * 10) / 10;
-        showTempHint('6 h keskiarvo alussa ' + fmt(start, 1) + ' °C ja nyt ' + fmt(t, 1) + ' °C – kentässä näiden keskiarvo (lämpötila nyt ' + fmt(r.now, 1) + ' °C).');
-      } else {
-        $('evTemp').value = Math.round(t * 10) / 10;
-        showTempHint('6 h keskiarvo ' + fmt(t, 1) + ' °C (lämpötila nyt ' + fmt(r.now, 1) + ' °C)');
-      }
+      var d = describe(r);
+      $('evTemp').value = Math.round(d[0] * 10) / 10;
+      showTempHint(d[1]);
     }).catch(function (e) {
       if (my !== tempReq) return;
       if (manual) toast(e.message); else showTempHint(e.message);
@@ -880,14 +938,14 @@
   function lastEvent() { var s = sorted(); return s[s.length - 1]; }
   function resetForm() {
     $('evForm').reset(); $('evId').value = '';
-    $('evDate').value = today();
+    $('evDate').value = today(); $('evTime').value = nowTime();
     var le = lastEvent(); $('evKm').placeholder = le ? 'edellinen ' + le.km : '';
     $('evFormTitle').textContent = 'Uusi lataus'; $('evSave').textContent = 'Tallenna lataus';
     $('evCancel').hidden = true;
     setCharger(prefs.lastCharger === 'dc' ? 'dc' : 'home');
     var pd = data.pending;
     if (pd) {
-      $('evDate').value = pd.date; $('evKm').value = pd.km; $('evBefore').value = pd.socBefore; $('evNote').value = pd.note || '';
+      $('evDate').value = pd.date; $('evTime').value = pd.time || ''; $('evKm').value = pd.km; $('evBefore').value = pd.socBefore; $('evNote').value = pd.note || '';
       if (typeof pd.charger === 'string') setCharger(pd.charger);
       $('evFormTitle').textContent = 'Lataus käynnissä – syötä lopputiedot';
       $('evSave').textContent = 'Tallenna valmis lataus';
@@ -909,12 +967,14 @@
     b.addEventListener('click', function () { setCharger(b.dataset.v); });
   });
   function setPendingUi(pending, editing) {
-    $('evStart').hidden = pending || editing;
+    $('evStart').hidden = editing;
+    $('evStart').textContent = pending ? 'Päivitä alkutiedot' : 'Aloita lataus – tallenna alkutiedot';
     $('evStartHint').hidden = pending || editing;
     $('evDiscard').hidden = !pending || editing;
   }
+  function timeVal(t) { return /^\d{2}:\d{2}$/.test(t) ? t : ''; }
   function formValues() {
-    return { date: $('evDate').value, km: num($('evKm').value), socBefore: num($('evBefore').value),
+    return { date: $('evDate').value, time: timeVal($('evTime').value), km: num($('evKm').value), socBefore: num($('evBefore').value),
       socAfter: num($('evAfter').value), kwh: num($('evKwh').value), temp: tempVal(num($('evTemp').value)), charger: CHARGERS[$('evCharger').value] ? $('evCharger').value : '', note: $('evNote').value.trim() };
   }
   function tempVal(t) { return isFinite(t) && t > -70 && t < 70 ? Math.round(t * 10) / 10 : null;
@@ -932,6 +992,9 @@
     p.innerHTML = html;
   }
   ['evBefore', 'evAfter', 'evKwh'].forEach(function (id) { $(id).addEventListener('input', updatePreview); });
+  ['evDate', 'evTime'].forEach(function (id) {
+    $(id).addEventListener('change', function () { if (wSettings().mode !== 'off') fillTemp(false); });
+  });
   $('evForm').addEventListener('submit', function (ev) {
     ev.preventDefault();
     var v = formValues();
@@ -956,8 +1019,10 @@
     var v = formValues();
     if (!v.date || !isFinite(v.km) || v.km < 0) return toast('Syötä päivämäärä ja km-lukema');
     if (!(v.socBefore >= 0 && v.socBefore < 100)) return toast('Syötä varaus ennen latausta');
-    data.pending = { date: v.date, km: v.km, socBefore: v.socBefore, temp: v.temp, charger: v.charger, note: v.note };
-    save(); toast('Alkutiedot tallennettu – täydennä, kun lataus on valmis'); show('summary');
+    var upd = !!data.pending;
+    data.pending = { date: v.date, time: v.time, km: v.km, socBefore: v.socBefore, temp: v.temp, charger: v.charger, note: v.note };
+    prefs.lastCharger = v.charger; savePrefs();
+    save(); toast(upd ? 'Alkutiedot päivitetty' : 'Alkutiedot tallennettu – täydennä, kun lataus on valmis'); show('summary');
   });
   $('evDiscard').addEventListener('click', function () {
     confirmBox('Hylätäänkö keskeneräisen latauksen alkutiedot?').then(function (ok) {
@@ -968,7 +1033,7 @@
 
   function editEvent(id) {
     var e = data.events.find(function (x) { return x.id === id; }); if (!e) return;
-    $('evId').value = e.id; $('evDate').value = e.date; $('evKm').value = e.km;
+    $('evId').value = e.id; $('evDate').value = e.date; $('evTime').value = e.time || ''; $('evKm').value = e.km;
     $('evBefore').value = e.socBefore; $('evAfter').value = e.socAfter; $('evKwh').value = e.kwh; $('evNote').value = e.note || '';
     $('evTemp').value = typeof e.temp === 'number' ? e.temp : ''; tempReq++; showTempHint('');
     setCharger(chg(e));
@@ -1329,7 +1394,7 @@
     $('evList').innerHTML = evs.map(function (e) {
       var c = capacityOf(e), ok = isValid(e);
       return '<div class="ev' + (ok ? '' : ' excluded') + '">' +
-        '<div class="main"><div>' + esc(fmtDate(e.date)) + ' · ' + fmt(e.km, 0) + ' km</div>' +
+        '<div class="main"><div>' + esc(fmtWhen(e.date, e.time)) + ' · ' + fmt(e.km, 0) + ' km</div>' +
         '<div class="meta">' + fmt(e.socBefore, 0) + ' → ' + fmt(e.socAfter, 0) + ' % · ' + fmt(e.kwh, 2) + ' kWh' + (typeof e.temp === 'number' ? ' · ' + fmt(e.temp, 1) + ' °C' : '') + (ok ? '' : ' · ei trendiin') + '</div>' +
         '<div class="meta">' + esc(chargerName(chg(e))) + (an.corrected && e._n !== null ? ' · vakioitu ' + fmt(e._n, 1) + ' kWh' : '') + '</div>' +
         (e.note ? '<div class="meta">' + esc(e.note) + '</div>' : '') +
@@ -1371,11 +1436,11 @@
     var n = function (v, d) { if (!isFinite(v)) return ''; var s = (Math.round(v * Math.pow(10, d)) / Math.pow(10, d)).toString(); return fi ? s.replace('.', ',') : s; };
     var q = function (s) { s = String(s || ''); return /[";,\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
     var nc = data.car.capacityNew;
-    var rows = [['Päivämäärä', 'Km-lukema', 'Varaus ennen %', 'Varaus jälkeen %', 'Ladattu kWh', 'Ladattu %-yks', 'Kapasiteetti kWh', 'SOH %', 'Trendiin', 'Huomio', 'Lämpötila °C (6 h ka)', 'Laturi', 'Vakioitu kapasiteetti kWh'].join(sep)];
+    var rows = [['Päivämäärä', 'Km-lukema', 'Varaus ennen %', 'Varaus jälkeen %', 'Ladattu kWh', 'Ladattu %-yks', 'Kapasiteetti kWh', 'SOH %', 'Trendiin', 'Huomio', 'Lämpötila °C (6 h ka)', 'Laturi', 'Vakioitu kapasiteetti kWh', 'Aloitusaika'].join(sep)];
     var an = analyze();
     an.evs.forEach(function (e) {
       var c = capacityOf(e);
-      rows.push([e.date, n(e.km, 0), n(e.socBefore, 1), n(e.socAfter, 1), n(e.kwh, 3), n(delta(e), 1), n(c, 2), nc ? n(c / nc * 100, 1) : '', isValid(e) ? 'kyllä' : 'ei', q(e.note), typeof e.temp === 'number' ? n(e.temp, 1) : '', CHARGERS[chg(e)] || '', e._n !== null ? n(e._n, 2) : ''].join(sep));
+      rows.push([e.date, n(e.km, 0), n(e.socBefore, 1), n(e.socAfter, 1), n(e.kwh, 3), n(delta(e), 1), n(c, 2), nc ? n(c / nc * 100, 1) : '', isValid(e) ? 'kyllä' : 'ei', q(e.note), typeof e.temp === 'number' ? n(e.temp, 1) : '', CHARGERS[chg(e)] || '', e._n !== null ? n(e._n, 2) : '', e.time || ''].join(sep));
     });
     return '﻿' + rows.join('\r\n') + '\r\n';
   }
@@ -1438,7 +1503,7 @@
   // Tuodut kentät tarkistetaan ja tyypitetään; id luodaan aina uudelleen.
   function cleanEvent(e) {
     if (!e || typeof e !== 'object') return null;
-    var o = { id: uid(), date: String(e.date || ''), km: num(e.km), socBefore: num(e.socBefore),
+    var o = { id: uid(), date: String(e.date || ''), time: timeVal(String(e.time || '')), km: num(e.km), socBefore: num(e.socBefore),
       socAfter: num(e.socAfter), kwh: num(e.kwh), temp: tempVal(num(e.temp)), charger: CHARGERS[e.charger] ? e.charger : '', note: String(e.note || '').slice(0, 200) };
     if (!/^\d{4}-\d{2}-\d{2}$/.test(o.date) || !isFinite(o.km) || !(o.socBefore >= 0 && o.socAfter <= 100 && o.socAfter > o.socBefore) || !(o.kwh > 0)) return null;
     return o;
@@ -1513,7 +1578,7 @@
     var added = [];
     lines.slice(1).forEach(function (l) {
       var c = parse(l);
-      var e = { id: uid(), date: c[0], km: num(c[1]), socBefore: num(c[2]), socAfter: num(c[3]), kwh: num(c[4]), temp: tempVal(num(c[10])), charger: chargerKey(c[11]), note: (c[9] || '').slice(0, 200) };
+      var e = { id: uid(), date: c[0], time: timeVal((c[13] || '').trim()), km: num(c[1]), socBefore: num(c[2]), socAfter: num(c[3]), kwh: num(c[4]), temp: tempVal(num(c[10])), charger: chargerKey(c[11]), note: (c[9] || '').slice(0, 200) };
       if (/^\d{4}-\d{2}-\d{2}$/.test(e.date) && isFinite(e.km) && e.socAfter > e.socBefore && e.kwh > 0) added.push(e);
     });
     if (!added.length) throw new Error('ei kelvollisia rivejä');
