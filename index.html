@@ -248,11 +248,13 @@
       <div id="drEndBox">
         <div class="row">
           <div><label for="drDist">Ajettu matka (km)</label><input type="number" id="drDist" inputmode="decimal" min="0" step="any"></div>
-          <div><label for="drSpeed">Keskinopeus (km/h)</label><input type="number" id="drSpeed" inputmode="decimal" min="0" step="any"></div>
+          <div><label for="drOdoEnd">tai matkamittari lopussa</label><input type="number" id="drOdoEnd" inputmode="numeric" min="0" step="any"></div>
         </div>
-        <label for="drSocEnd">Varaus lopussa (%)</label>
-        <input type="number" id="drSocEnd" inputmode="decimal" min="0" max="100" step="any">
-        <p class="hint">Matka ja keskinopeus ajotietokoneesta.</p>
+        <div class="row">
+          <div><label for="drSpeed">Keskinopeus (km/h)</label><input type="number" id="drSpeed" inputmode="decimal" min="0" step="any"></div>
+          <div><label for="drSocEnd">Varaus lopussa (%)</label><input type="number" id="drSocEnd" inputmode="decimal" min="0" max="100" step="any"></div>
+        </div>
+        <p class="hint">Matka ja keskinopeus ajotietokoneesta. Jos syötät matkamittarin lukeman lopussa, ajettu matka lasketaan siitä.</p>
       </div>
       <label for="drTemp" id="drTempL">Ulkolämpötila nyt (°C)</label>
       <div class="inline">
@@ -1303,7 +1305,7 @@
     $('drTempL').textContent = mode === 'pending' ? 'Ulkolämpötila lopussa (°C)' : mode === 'edit' ? 'Ajon keskilämpötila (°C)' : 'Ulkolämpötila nyt (°C)';
   }
   function resetDriveForm() {
-    $('drForm').reset(); $('drId').value = '';
+    $('drForm').reset(); $('drId').value = ''; drDistSrc = 'dist';
     $('drDate').value = today();
     var last = sortedDrives().slice(-1)[0], le = lastEvent();
     var lastOdo = Math.max(last ? last.odo + (last.dist || 0) : 0, le ? le.km : 0);
@@ -1333,6 +1335,22 @@
     p.innerHTML = html;
   }
   ['drSocStart', 'drSocEnd', 'drDist'].forEach(function (id) { $(id).addEventListener('input', updateDrivePreview); });
+  // Ajettu matka ja matkamittari lopussa pidetään yhtäpitävinä: viimeksi muokattu kenttä ratkaisee.
+  var drDistSrc = 'dist';
+  function syncDriveDist() {
+    var odo = num($('drOdo').value);
+    if (drDistSrc === 'end') {
+      var end = num($('drOdoEnd').value);
+      $('drDist').value = isFinite(odo) && isFinite(end) && end > odo ? Math.round((end - odo) * 10) / 10 : '';
+    } else {
+      var dist = num($('drDist').value);
+      $('drOdoEnd').value = isFinite(odo) && isFinite(dist) && dist > 0 ? Math.round((odo + dist) * 10) / 10 : '';
+    }
+    updateDrivePreview();
+  }
+  $('drDist').addEventListener('input', function () { drDistSrc = 'dist'; syncDriveDist(); });
+  $('drOdoEnd').addEventListener('input', function () { drDistSrc = 'end'; syncDriveDist(); });
+  $('drOdo').addEventListener('input', syncDriveDist);
   $('drStart').addEventListener('click', function () {
     var v = driveValues();
     if (!v.date || !isFinite(v.odo) || v.odo < 0) return toast('Syötä päivämäärä ja matkamittarin lukema');
@@ -1345,7 +1363,7 @@
     var v = driveValues(), id = $('drId').value;
     if (!v.date || !isFinite(v.odo) || v.odo < 0) return toast('Tarkista päivämäärä ja matkamittarin lukema');
     if (!(v.socStart <= 100 && v.socEnd >= 0 && v.socEnd < v.socStart)) return toast('Tarkista varausprosentit');
-    if (!(v.dist > 0)) return toast('Syötä ajettu matka');
+    if (!(v.dist > 0)) return toast(drDistSrc === 'end' && $('drOdoEnd').value ? 'Matkamittarin lukeman lopussa pitää olla suurempi kuin alussa' : 'Syötä ajettu matka tai matkamittarin lukema lopussa');
     if (!(v.speed > 0 && v.speed < 250)) return toast('Syötä keskinopeus');
     var pd = data.pendingDrive;
     if (id) {
@@ -1384,6 +1402,7 @@
     $('drId').value = d.id; $('drDate').value = d.date; $('drOdo').value = d.odo; $('drSocStart').value = d.socStart;
     $('drSocEnd').value = d.socEnd; $('drDist').value = d.dist; $('drSpeed').value = d.speed; $('drNote').value = d.note || '';
     $('drTemp').value = typeof d.temp === 'number' ? d.temp : '';
+    drDistSrc = 'dist'; syncDriveDist();
     drTempReq++;
     drHint(typeof d.tempStart === 'number' && typeof d.tempEnd === 'number' ? 'Alussa ' + fmt(d.tempStart, 1) + ' °C, lopussa ' + fmt(d.tempEnd, 1) + ' °C' : '');
     setDriveUi('edit'); updateDrivePreview(); show('drive');
