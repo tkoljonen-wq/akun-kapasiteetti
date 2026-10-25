@@ -299,6 +299,7 @@
       <p class="hint" style="margin-top:4px">Ajastetulle lataukselle syötä ajastettu alkamisaika – lämpötila haetaan sen mukaan.</p>
       <label for="evKm">Km-lukema</label>
       <input type="number" id="evKm" inputmode="numeric" min="0" step="1" required>
+      <p class="hint" id="evKmHint" hidden></p>
       <div class="row">
         <div><label for="evBefore">Varaus ennen (%)</label><input type="number" id="evBefore" inputmode="decimal" min="0" max="100" step="any" required></div>
         <div><label for="evAfter">Varaus jälkeen (%)</label><input type="number" id="evAfter" inputmode="decimal" min="0" max="100" step="any" required></div>
@@ -1025,10 +1026,28 @@
 
   // ---------- Latauslomake ----------
   function lastEvent() { var s = sorted(); return s[s.length - 1]; }
+  // Suurin tunnettu matkamittarin lukema latauksista ja ajojen loppulukemista.
+  function lastKnownOdo() {
+    var m = 0;
+    data.events.forEach(function (e) { if (isFinite(e.km)) m = Math.max(m, e.km); });
+    drives().forEach(function (d) { if (isFinite(d.odo)) m = Math.max(m, d.odo + (d.dist || 0)); });
+    return Math.round(m);
+  }
+  // Uuden latauksen km-lukema, joka on pienempi kuin viimeisin tunnettu, on yleensä kirjausvirhe (esim. edellisen latauksen lukema).
+  function kmLooksStale(km) {
+    var last = lastKnownOdo();
+    return !$('evId').value && last > 0 && isFinite(km) && km >= last * 0.9 && km < last - 1 ? last : 0;
+  }
+  function updateKmHint() {
+    var last = kmLooksStale(num($('evKm').value));
+    $('evKmHint').innerHTML = last ? '<span class="warn">Viimeisin tunnettu lukema on n. ' + fmt(last, 0) + ' km (lataukset ja ajojen loppulukemat). Tarkista km-lukema.</span>' : '';
+    $('evKmHint').hidden = !last;
+  }
+  $('evKm').addEventListener('input', updateKmHint);
   function resetForm() {
     $('evForm').reset(); $('evId').value = '';
     $('evDate').value = today(); $('evTime').value = nowTime();
-    var le = lastEvent(); $('evKm').placeholder = le ? 'edellinen ' + le.km : '';
+    var lo = lastKnownOdo(); $('evKm').placeholder = lo ? 'n. ' + fmt(lo, 0) : '';
     $('evFormTitle').textContent = 'Uusi lataus'; $('evSave').textContent = 'Tallenna lataus';
     $('evCancel').hidden = true;
     setCharger(CHARGERS[prefs.lastCharger] ? prefs.lastCharger : 'home');
@@ -1040,7 +1059,7 @@
       $('evSave').textContent = 'Tallenna valmis lataus';
     }
     setPendingUi(!!pd, false);
-    updatePreview();
+    updatePreview(); updateKmHint();
     tempReq++; showTempHint(''); $('evTempBtn').disabled = false; $('evTempBtn').textContent = 'Hae';
     if (wSettings().mode !== 'off') fillTemp(false);
     if (pd) setTimeout(function () { $('evAfter').focus(); }, 50);
@@ -1097,7 +1116,13 @@
     if (!(v.kwh > 0)) return toast('Tarkista ladattu energia');
     var S = startMoment(), E = endMoment();
     if (S && E && E <= S) return toast('Lopetusajan pitää olla aloituksen jälkeen');
-    var id = $('evId').value;
+    var id = $('evId').value, last = kmLooksStale(v.km);
+    if (!last) return saveEvent(v, id);
+    confirmBox('Km-lukema ' + fmt(v.km, 0) + ' on pienempi kuin viimeisin tunnettu lukema n. ' + fmt(last, 0) + ' km. Tallennetaanko silti?').then(function (ok) {
+      if (ok) saveEvent(v, id); else $('evKm').focus();
+    });
+  });
+  function saveEvent(v, id) {
     prefs.lastCharger = v.charger; savePrefs();
     if (id) {
       var e = data.events.find(function (x) { return x.id === id; });
@@ -1108,7 +1133,7 @@
       toast('Tallennettu: ' + fmt(capacityOf(v), 1) + ' kWh');
     }
     save(); $('evId').value = ''; show(id ? 'list' : 'summary');
-  });
+  }
   $('evCancel').addEventListener('click', function () { $('evId').value = ''; show('list'); });
 
   $('evStart').addEventListener('click', function () {
@@ -1134,7 +1159,7 @@
     $('evTemp').value = typeof e.temp === 'number' ? e.temp : ''; tempReq++; showTempHint('');
     setCharger(chg(e));
     $('evFormTitle').textContent = 'Muokkaa latausta'; $('evSave').textContent = 'Tallenna muutokset'; $('evCancel').hidden = false;
-    setPendingUi(false, true);
+    setPendingUi(false, true); updateKmHint();
     updatePreview(); show('add');
   }
 
