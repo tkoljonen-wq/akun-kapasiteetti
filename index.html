@@ -68,6 +68,7 @@
   }
   input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent2); border-color: transparent; }
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  [hidden] { display: none !important; }
   .btn {
     display: inline-flex; align-items: center; justify-content: center; gap: 6px;
     font: inherit; font-weight: 600; border: 0; border-radius: 12px;
@@ -249,6 +250,17 @@
 
   <!-- AJO -->
   <section class="view" id="view-drive">
+    <form class="card" id="odForm" autocomplete="off">
+      <h2 id="odTitle">Matkamittarin lukema</h2>
+      <input type="hidden" id="odId">
+      <div class="row">
+        <div><label for="odDate">Päivämäärä</label><input type="date" id="odDate" required></div>
+        <div><label for="odKm">Lukema (km)</label><input type="number" id="odKm" inputmode="numeric" min="0" step="1" required></div>
+      </div>
+      <p class="hint" id="odHint">Pelkkä lukema ilman ajon tai latauksen tietoja. Aurinkopaneelit-ohjelma hakee nämä sekä latausten ja ajojen lukemat kulutuslaskentaan (päivän suurin lukema).</p>
+      <button class="btn primary block" type="submit" id="odSave">Tallenna lukema</button>
+      <button class="btn block" type="button" id="odCancel" hidden>Peruuta muokkaus</button>
+    </form>
     <form class="card" id="drForm" autocomplete="off">
       <h2 id="drFormTitle">Uusi ajo</h2>
       <input type="hidden" id="drId">
@@ -339,10 +351,12 @@
     <div class="seg" id="listMode">
       <button data-mode="charge" class="active">Lataukset (<span id="evCount">0</span>)</button>
       <button data-mode="drive">Ajot (<span id="drCount">0</span>)</button>
+      <button data-mode="odo">Lukemat (<span id="odCount">0</span>)</button>
     </div>
     <div class="card">
       <div id="evList"></div>
       <div id="drList" hidden></div>
+      <div id="odList" hidden></div>
     </div>
   </section>
 
@@ -696,10 +710,11 @@
     window.scrollTo(0, 0);
     updDots();
     if (view === 'summary') renderSummary();
-    if (view === 'list') { renderList(); renderDriveList(); }
+    if (view === 'list') { renderList(); renderDriveList(); renderOdoList(); }
     if (view === 'stats') renderStats();
     if (view === 'add' && !$('evId').value) resetForm();
     if (view === 'drive' && !$('drId').value) resetDriveForm();
+    if (view === 'drive' && !$('odId').value) resetOdoForm();
   }
   function updDots() {
     document.querySelector('nav.tabs button[data-view=add]').classList.toggle('dot', !!data.pending);
@@ -711,7 +726,7 @@
     var v = currentView();
     updDots();
     if (v === 'summary') renderSummary();
-    if (v === 'list') { renderList(); renderDriveList(); }
+    if (v === 'list') { renderList(); renderDriveList(); renderOdoList(); }
     if (v === 'stats') renderStats();
     if (v !== 'car') { fillCar(); fillWeather(); }
   }
@@ -1064,9 +1079,10 @@
 
   // ---------- Latauslomake ----------
   function lastEvent() { var s = sorted(); return s[s.length - 1]; }
-  // Suurin tunnettu matkamittarin lukema latauksista ja ajojen loppulukemista.
+  // Suurin tunnettu matkamittarin lukema latauksista, ajojen loppulukemista ja erikseen syötetyistä lukemista.
   function lastKnownOdo() {
     var m = 0;
+    odos().forEach(function (o) { if (isFinite(o.km)) m = Math.max(m, o.km); });
     data.events.forEach(function (e) { if (isFinite(e.km)) m = Math.max(m, e.km); });
     drives().forEach(function (d) { if (isFinite(d.odo)) m = Math.max(m, d.odo + (d.dist || 0)); });
     return Math.round(m);
@@ -1078,7 +1094,7 @@
   }
   function updateKmHint() {
     var last = kmLooksStale(num($('evKm').value));
-    $('evKmHint').innerHTML = last ? '<span class="warn">Viimeisin tunnettu lukema on n. ' + fmt(last, 0) + ' km (lataukset ja ajojen loppulukemat). Tarkista km-lukema.</span>' : '';
+    $('evKmHint').innerHTML = last ? '<span class="warn">Viimeisin tunnettu lukema on n. ' + fmt(last, 0) + ' km (lataukset, ajot ja erilliset lukemat). Tarkista km-lukema.</span>' : '';
     $('evKmHint').hidden = !last;
   }
   $('evKm').addEventListener('input', updateKmHint);
@@ -1204,6 +1220,73 @@
 
   // ---------- Ajot: toimintamatka = a + b·km + c·min(T−15,0) + s·(v − 70) ----------
   var REF_SPEED = 70, S_MIN_N = 8, S_MIN_RANGE = 20;
+  // ---------- Erillinen matkamittarin lukema ----------
+  function odos() { return data.odometer || (data.odometer = []); }
+  function resetOdoForm() {
+    $('odForm').reset(); $('odId').value = '';
+    $('odDate').value = today();
+    var lo = lastKnownOdo(); $('odKm').placeholder = lo ? 'n. ' + fmt(lo, 0) : '';
+    $('odTitle').textContent = 'Matkamittarin lukema'; $('odSave').textContent = 'Tallenna lukema'; $('odCancel').hidden = true;
+  }
+  // Suurin muu tunnettu lukema samalta tai aiemmalta päivältä: mittari ei pyöri taaksepäin.
+  function odoBefore(date, skipId) {
+    var m = 0;
+    odos().forEach(function (o) { if (o.id !== skipId && o.date <= date && isFinite(o.km)) m = Math.max(m, o.km); });
+    data.events.forEach(function (e) { if (e.date <= date && isFinite(e.km)) m = Math.max(m, e.km); });
+    drives().forEach(function (d) { if (d.date <= date && isFinite(d.odo)) m = Math.max(m, d.odo + (d.dist > 0 ? d.dist : 0)); });
+    return Math.round(m);
+  }
+  $('odForm').addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var id = $('odId').value, date = dateVal($('odDate').value), km = num($('odKm').value);
+    if (!date || !isFinite(km) || km < 0) return toast('Tarkista päivämäärä ja lukema');
+    if (date > today()) return toast('Päivämäärä ei voi olla tulevaisuudessa');
+    km = Math.round(km);
+    var prev = odoBefore(date, id);
+    var ask = prev > km + 1
+      ? confirmBox('Lukema ' + fmt(km, 0) + ' km on pienempi kuin ' + fmtDate(date) + ' mennessä tunnettu lukema ' + fmt(prev, 0) + ' km. Tallennetaanko silti?')
+      : Promise.resolve(true);
+    ask.then(function (ok) {
+      if (!ok) return;
+      // Samalle päivälle yksi erillinen lukema: uusi korvaa saman päivän aiemman.
+      var o = id ? odos().find(function (x) { return x.id === id; }) : odos().find(function (x) { return x.date === date; });
+      var upd = !!o;
+      if (o) { o.date = date; o.km = km; } else { o = { id: uid(), date: date, km: km }; odos().push(o); }
+      data.odometer = odos().filter(function (x) { return x === o || x.date !== date; });
+      save(); resetOdoForm();
+      toast(fmtDate(date) + ': lukema ' + fmt(km, 0) + ' km ' + (upd ? 'päivitetty' : 'tallennettu'));
+      if (id) show('list');
+    });
+  });
+  $('odCancel').addEventListener('click', function () { $('odId').value = ''; show('list'); });
+  function editOdo(id) {
+    var o = odos().find(function (x) { return x.id === id; }); if (!o) return;
+    show('drive');
+    $('odId').value = o.id; $('odDate').value = o.date; $('odKm').value = o.km;
+    $('odTitle').textContent = 'Muokkaa lukemaa'; $('odSave').textContent = 'Tallenna muutokset'; $('odCancel').hidden = false;
+    $('odKm').focus();
+  }
+  function renderOdoList() {
+    var os = odos().slice().sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : b.km - a.km; });
+    $('odCount').textContent = os.length;
+    if (!os.length) { $('odList').innerHTML = '<div class="empty">Ei erikseen syötettyjä lukemia. Syötä lukema Ajo-välilehdellä.</div>'; return; }
+    $('odList').innerHTML = os.map(function (o) {
+      return '<div class="ev"><div class="main"><div>' + esc(fmtDate(o.date)) + '</div>' +
+        '<div class="btns" style="margin-top:6px"><button class="btn small" data-oedit="' + esc(o.id) + '">Muokkaa</button>' +
+        '<button class="btn small" data-odel="' + esc(o.id) + '" style="color:var(--danger)">Poista</button></div></div>' +
+        '<div class="cap">' + fmt(o.km, 0) + '<small>km</small></div></div>';
+    }).join('');
+  }
+  $('odList').addEventListener('click', function (ev) {
+    var b = ev.target.closest('button'); if (!b) return;
+    if (b.dataset.oedit) editOdo(b.dataset.oedit);
+    if (b.dataset.odel) confirmBox('Poistetaanko tämä lukema?').then(function (ok) {
+      if (!ok) return;
+      data.odometer = odos().filter(function (x) { return x.id !== b.dataset.odel; });
+      save(); renderOdoList(); toast('Lukema poistettu');
+    });
+  });
+
   function drives() { return data.drives || (data.drives = []); }
   function dDelta(d) { return d.socStart - d.socEnd; }
   function rangeOf(d) { var ds = dDelta(d); return ds > 0 && d.dist > 0 ? d.dist / ds * 100 : NaN; }
@@ -1427,8 +1510,7 @@
   function resetDriveForm() {
     $('drForm').reset(); $('drId').value = ''; drDistSrc = 'dist';
     $('drDate').value = today();
-    var last = sortedDrives().slice(-1)[0], le = lastEvent();
-    var lastOdo = Math.max(last ? last.odo + (last.dist || 0) : 0, le ? le.km : 0);
+    var lastOdo = lastKnownOdo();
     $('drOdo').placeholder = lastOdo ? 'n. ' + fmt(Math.round(lastOdo), 0) : '';
     var pd = data.pendingDrive;
     if (pd) {
@@ -1552,10 +1634,10 @@
       save(); renderDriveList(); toast('Ajo poistettu');
     });
   });
-  var listMode = prefs.listMode === 'drive' ? 'drive' : 'charge';
+  var listMode = ['drive', 'odo'].indexOf(prefs.listMode) >= 0 ? prefs.listMode : 'charge';
   function applyListMode() {
     document.querySelectorAll('#listMode button').forEach(function (b) { b.classList.toggle('active', b.dataset.mode === listMode); });
-    $('evList').hidden = listMode !== 'charge'; $('drList').hidden = listMode !== 'drive';
+    $('evList').hidden = listMode !== 'charge'; $('drList').hidden = listMode !== 'drive'; $('odList').hidden = listMode !== 'odo';
   }
   document.querySelectorAll('#listMode button').forEach(function (b) {
     b.addEventListener('click', function () { listMode = b.dataset.mode; prefs.listMode = listMode; savePrefs(); applyListMode(); });
@@ -1635,6 +1717,7 @@
     // Km-lukemat latauksista ja ajoista (ajon loppulukema = alku + matka)
     var odo = [];
     evs.forEach(function (e) { if (isFinite(e.km)) odo.push(e.km); });
+    odos().forEach(function (o) { if (inRange(o.date, r) && isFinite(o.km)) odo.push(o.km); });
     var dr = drives().filter(function (d) { return inRange(d.date, r); }), dKm = 0;
     dr.forEach(function (d) { dKm += d.dist || 0; if (isFinite(d.odo)) { odo.push(d.odo); if (d.dist > 0) odo.push(d.odo + d.dist); } });
     var odoKm = odo.length >= 2 ? Math.max.apply(null, odo) - Math.min.apply(null, odo) : NaN;
@@ -1643,8 +1726,8 @@
     $('stDriveL').textContent = 'Kirjattujen ajojen km (' + dr.length + ' ajoa)';
     $('stCons').textContent = odoKm > 0 && all > 0 ? fmt(all / odoKm * 100, 1) : '–';
     $('stKmHint').textContent = odo.length >= 2
-      ? 'Km-lukemien perusteella = aikavälin suurimman ja pienimmän kirjatun km-lukeman erotus (' + odo.length + ' lukemaa latauksista ja ajoista). Ajo ennen ensimmäistä ja viimeisen kirjauksen jälkeen ei näy. Ladattu kWh / 100 km sisältää kaikki laturityypit ja lataushäviöt, joten se on suuntaa-antava.'
-      : 'Km-lukemien perusteella laskemiseen tarvitaan aikavälille vähintään kaksi km-lukemaa latauksista tai ajoista.';
+      ? 'Km-lukemien perusteella = aikavälin suurimman ja pienimmän kirjatun km-lukeman erotus (' + odo.length + ' lukemaa latauksista, ajoista ja erillisistä lukemista). Ajo ennen ensimmäistä ja viimeisen kirjauksen jälkeen ei näy. Ladattu kWh / 100 km sisältää kaikki laturityypit ja lataushäviöt, joten se on suuntaa-antava.'
+      : 'Km-lukemien perusteella laskemiseen tarvitaan aikavälille vähintään kaksi km-lukemaa latauksista, ajoista tai erillisistä lukemista.';
 
     // Kuukausittain (valitut laturityypit)
     var months = {}, mo = function (k) { return months[k] || (months[k] = { n: 0, kwh: 0, km: 0 }); };
@@ -1772,6 +1855,11 @@
     if (out.mode === 'place' && !out.place) out.mode = 'off';
     return out;
   }
+  function cleanOdo(o) {
+    if (!o || typeof o !== 'object') return null;
+    var r = { id: uid(), date: dateVal(o.date), km: Math.round(num(o.km)) };
+    return r.date && isFinite(r.km) && r.km >= 0 ? r : null;
+  }
   function cleanDrive(d) {
     if (!d || typeof d !== 'object') return null;
     var o = { id: uid(), date: String(d.date || ''), odo: num(d.odo), socStart: num(d.socStart), socEnd: num(d.socEnd),
@@ -1805,13 +1893,14 @@
   function importJson(txt) {
     var o = JSON.parse(txt), d = o.data || o;
     if (!d.car || !Array.isArray(d.events)) throw new Error('tuntematon tiedosto');
-    return confirmBox('Korvataanko nykyiset tiedot varmuuskopiolla (' + d.events.length + ' latausta, ' + (Array.isArray(d.drives) ? d.drives.length : 0) + ' ajoa)?').then(function (ok) {
+    return confirmBox('Korvataanko nykyiset tiedot varmuuskopiolla (' + d.events.length + ' latausta, ' + (Array.isArray(d.drives) ? d.drives.length : 0) + ' ajoa' + (Array.isArray(d.odometer) && d.odometer.length ? ', ' + d.odometer.length + ' lukemaa' : '') + ')?').then(function (ok) {
       if (!ok) return;
       var c = d.car || {}, cap = num(c.capacityNew), md = parseInt(c.minDelta, 10);
       data = {
         car: { name: String(c.name || '').slice(0, 60), capacityNew: cap > 0 ? cap : null, minDelta: md >= 1 && md <= 100 ? md : 20 },
         events: d.events.map(cleanEvent).filter(Boolean),
         drives: (Array.isArray(d.drives) ? d.drives : []).map(cleanDrive).filter(Boolean),
+        odometer: (Array.isArray(d.odometer) ? d.odometer : []).map(cleanOdo).filter(Boolean),
         weather: cleanWeather(d.weather)
       };
       save(); fillCar(); fillWeather(); toast('Tiedot palautettu'); show('summary');
@@ -1857,7 +1946,7 @@
 
   // ---------- Pilvisynkronointi (Firebase) ----------
   // Laitteen localStorage on aina ensisijainen tallennus: sovellus toimii ilman verkkoa ja ilman kirjautumista.
-  // Kirjautuneena muutokset kirjoitetaan Firestoreen (users/{uid}/events|drives/{id} ja users/{uid}/meta/state).
+  // Kirjautuneena muutokset kirjoitetaan Firestoreen (users/{uid}/events|drives|odometer/{id} ja users/{uid}/meta/state).
   // `base` muistaa, mikä versio kustakin merkinnästä on viimeksi synkronoitu, jotta vain muutokset lähetetään
   // ja toisilla laitteilla tehdyt muutokset ja poistot osataan tuoda tähän laitteeseen.
   // Firebase ladataan vasta kirjautuessa: ilman kirjautumista sovellus ei ota yhteyttä Googleen.
@@ -1874,7 +1963,7 @@
   var SYNC_KEY = 'akkukapasiteetti-sync-v1';
   var ALLOWED_EMAIL = 'tkoljonen@gmail.com';
   var fb = null, fbLoading = null, user = null, unsubs = [], cloudReady = false, inflight = 0, syncErr = '';
-  var base = (function () { try { var b = JSON.parse(localStorage.getItem(SYNC_KEY)); if (b && b.uid && b.ev && b.dr) return b; } catch (e) {} return null; })();
+  var base = (function () { try { var b = JSON.parse(localStorage.getItem(SYNC_KEY)); if (b && b.uid && b.ev && b.dr) { b.od = b.od || {}; return b; } } catch (e) {} return null; })();
   function saveBase() { try { if (base) localStorage.setItem(SYNC_KEY, JSON.stringify(base)); else localStorage.removeItem(SYNC_KEY); } catch (e) {} }
 
   function clean(o) { return JSON.parse(JSON.stringify(o, noPriv)); }
@@ -1892,7 +1981,8 @@
     if (o.weather) data.weather = o.weather; else delete data.weather;
   }
   var COLLS = [{ name: 'events', b: 'ev', get: function () { return data.events; }, set: function (a) { data.events = a; } },
-               { name: 'drives', b: 'dr', get: function () { return drives(); }, set: function (a) { data.drives = a; } }];
+               { name: 'drives', b: 'dr', get: function () { return drives(); }, set: function (a) { data.drives = a; } },
+               { name: 'odometer', b: 'od', get: function () { return odos(); }, set: function (a) { data.odometer = a; } }];
   function userPath(p) { return 'users/' + user.uid + (p ? '/' + p : ''); }
 
   function loadFb() {
@@ -1982,29 +2072,33 @@
 
   function evKey(e) { return e.date + '|' + e.km + '|' + e.socBefore + '|' + e.socAfter + '|' + e.kwh; }
   function drKey(d) { return d.date + '|' + d.odo + '|' + d.socStart + '|' + d.socEnd + '|' + d.dist; }
+  function odKey(o) { return o.date + '|' + o.km; }
   function startCloud() {
     syncErr = ''; setSync();
     if (base && base.uid === user.uid) { cloudReady = true; pushLocal(); listen(); renderAcct(); return; }
     // Ensimmäinen kirjautuminen tällä laitteella: yhdistetään laitteen ja pilven tiedot.
     var m = fb.m, me = user;
-    Promise.all([m.getDocsFromServer(m.collection(fb.db, userPath('events'))), m.getDocsFromServer(m.collection(fb.db, userPath('drives'))), m.getDocFromServer(m.doc(fb.db, userPath('meta/state')))]).then(function (r) {
+    Promise.all([m.getDocsFromServer(m.collection(fb.db, userPath('events'))), m.getDocsFromServer(m.collection(fb.db, userPath('drives'))), m.getDocFromServer(m.doc(fb.db, userPath('meta/state'))), m.getDocsFromServer(m.collection(fb.db, userPath('odometer')))]).then(function (r) {
       if (user !== me) return;
-      var cEv = r[0].docs, cDr = r[1].docs, cMeta = r[2].exists() ? r[2].data() : null;
-      var cloudEmpty = !cEv.length && !cDr.length && !cMeta;
-      var evKeys = {}, drKeys = {}, ids = {};
+      var cEv = r[0].docs, cDr = r[1].docs, cMeta = r[2].exists() ? r[2].data() : null, cOd = r[3].docs;
+      var cloudEmpty = !cEv.length && !cDr.length && !cMeta && !cOd.length;
+      var evKeys = {}, drKeys = {}, odKeys = {}, ids = {};
       cEv.forEach(function (d) { evKeys[evKey(d.data())] = 1; ids[d.id] = 1; });
       cDr.forEach(function (d) { drKeys[drKey(d.data())] = 1; ids[d.id] = 1; });
+      cOd.forEach(function (d) { odKeys[odKey(d.data())] = 1; ids[d.id] = 1; });
       var extraEv = data.events.filter(function (e) { return !ids[e.id] && !evKeys[evKey(e)]; });
       var extraDr = drives().filter(function (d) { return !ids[d.id] && !drKeys[drKey(d)]; });
-      var ask = !cloudEmpty && (extraEv.length || extraDr.length)
-        ? confirmBox('Pilvessä on jo tietoja (' + cEv.length + ' latausta, ' + cDr.length + ' ajoa). Tässä laitteessa on lisäksi ' + extraEv.length + ' latausta ja ' + extraDr.length + ' ajoa, joita pilvessä ei ole. Lisätäänkö ne pilveen? Peruuta = käytetään vain pilven tietoja.')
+      var extraOd = odos().filter(function (o) { return !ids[o.id] && !odKeys[odKey(o)]; });
+      var ask = !cloudEmpty && (extraEv.length || extraDr.length || extraOd.length)
+        ? confirmBox('Pilvessä on jo tietoja (' + cEv.length + ' latausta, ' + cDr.length + ' ajoa, ' + cOd.length + ' lukemaa). Tässä laitteessa on lisäksi ' + extraEv.length + ' latausta, ' + extraDr.length + ' ajoa ja ' + extraOd.length + ' lukemaa, joita pilvessä ei ole. Lisätäänkö ne pilveen? Peruuta = käytetään vain pilven tietoja.')
         : Promise.resolve(true);
       return ask.then(function (merge) {
         if (user !== me) return;
-        base = { uid: me.uid, ev: {}, dr: {}, meta: null };
+        base = { uid: me.uid, ev: {}, dr: {}, od: {}, meta: null };
         if (!cloudEmpty) {
           data.events = cEv.map(function (d) { var o = d.data(); base.ev[d.id] = canon(o); o.id = d.id; return o; }).concat(merge ? extraEv : []);
           data.drives = cDr.map(function (d) { var o = d.data(); base.dr[d.id] = canon(o); o.id = d.id; return o; }).concat(merge ? extraDr : []);
+          data.odometer = cOd.map(function (d) { var o = d.data(); base.od[d.id] = canon(o); o.id = d.id; return o; }).concat(merge ? extraOd : []);
           if (cMeta) { base.meta = canon(cMeta); applyMeta(cMeta); }
         }
         saveLocal(); saveBase();
@@ -2078,8 +2172,8 @@
       if (!navigator.onLine) return toast('Tilin poisto vaatii verkkoyhteyden');
       var f = fb, m = f.m, me = user;
       stopListen();
-      Promise.all([m.getDocsFromServer(m.collection(f.db, userPath('events'))), m.getDocsFromServer(m.collection(f.db, userPath('drives')))]).then(function (r) {
-        var refs = r[0].docs.concat(r[1].docs).map(function (d) { return d.ref; }).concat([m.doc(f.db, userPath('meta/state'))]);
+      Promise.all([m.getDocsFromServer(m.collection(f.db, userPath('events'))), m.getDocsFromServer(m.collection(f.db, userPath('drives'))), m.getDocsFromServer(m.collection(f.db, userPath('odometer')))]).then(function (r) {
+        var refs = r[0].docs.concat(r[1].docs, r[2].docs).map(function (d) { return d.ref; }).concat([m.doc(f.db, userPath('meta/state'))]);
         return commitOps(refs.map(function (ref) { return function (b) { b.delete(ref); }; }));
       }).then(function () {
         return m.deleteUser(me).catch(function (e) {
