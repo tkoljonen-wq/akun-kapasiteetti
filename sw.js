@@ -36,6 +36,16 @@ self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
+  // Firebase SDK (versioitu, muuttumaton): cache first, jotta sovellus käynnistyy kirjautuneena myös offline.
+  if (url.origin === 'https://www.gstatic.com' && url.pathname.startsWith('/firebasejs/')) {
+    event.respondWith(
+      caches.open(CACHE_NAME).then((cache) => cache.match(req).then((hit) => hit || fetch(req).then((res) => {
+        if (res && res.ok) cache.put(req, res.clone());
+        return res;
+      })))
+    );
+    return;
+  }
   if (url.origin !== self.location.origin) return;
   // Vain tämän sovelluksen hakemiston pyynnöt
   const scope = new URL(self.registration.scope);

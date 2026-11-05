@@ -80,6 +80,11 @@
   .btn.block { width: 100%; margin-top: 14px; }
   .btn:disabled { opacity: .5; }
   #installBtn { display: none; background: var(--accent2); color: #04202c; }
+  #cloudBtn { display: none; background: none; padding: 6px 8px; color: var(--muted); }
+  #cloudBtn svg { width: 24px; height: 24px; }
+  #cloudBtn.ok { color: var(--accent); }
+  #cloudBtn.wait { color: var(--warn); }
+  #cloudBtn.err { color: var(--danger); }
   .preview { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: var(--card2); font-size: 15px; }
   .preview b { color: var(--accent); }
   .hint { font-size: 13px; color: var(--muted); margin: 6px 0 0; }
@@ -159,6 +164,7 @@
 <body>
 <header>
   <h1 id="title">Akun kapasiteetti</h1>
+  <button class="btn small" id="cloudBtn" aria-label="Pilvitallennus" title="Pilvitallennus"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M7 18h10a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.1 9.1 4.5 4.5 0 0 0 7 18z"/></svg></button>
   <button class="btn small" id="installBtn">Asenna</button>
 </header>
 
@@ -384,6 +390,23 @@
 
   <!-- AUTO / ASETUKSET -->
   <section class="view" id="view-car">
+    <div class="card" id="acctCard">
+      <h2>Pilvitallennus</h2>
+      <div id="acctOut">
+        <p class="hint" style="margin:0">Kirjaudu Google-tilillä, niin tiedot tallentuvat myös pilveen ja ovat käytössä kaikilla laitteillasi. Ilman kirjautumista tiedot ovat vain tässä laitteessa.</p>
+        <button class="btn primary block" type="button" id="signInBtn">Kirjaudu Googlella</button>
+      </div>
+      <div id="acctIn" hidden>
+        <p style="margin:0">Kirjautunut: <b id="acctEmail"></b></p>
+        <p class="hint" id="syncState"></p>
+        <div class="btns" style="margin-top:12px">
+          <button class="btn" type="button" id="signOutBtn">Kirjaudu ulos</button>
+          <button class="btn danger" type="button" id="delAcctBtn">Poista tili ja pilvitiedot</button>
+        </div>
+      </div>
+      <p class="hint">Pilvitiedot tallennetaan Googlen Firebase-palveluun EU:ssa (Suomi, europe-north1), ja vain sinä pääset niihin omalla tililläsi. Sijaintia ei tallenneta. Ilman kirjautumista sovellus ei ota yhteyttä Googleen.</p>
+    </div>
+
     <form class="card" id="carForm" autocomplete="off">
       <h2>Auton tiedot</h2>
       <label for="carName">Auto</label>
@@ -434,7 +457,7 @@
         <button class="btn" id="impBtn">Tuo tiedostosta</button>
       </div>
       <input type="file" id="impFile" accept=".json,.csv,application/json,text/csv" hidden>
-      <p class="hint">Tiedot tallentuvat vain tämän laitteen selaimeen. Ota varmuuskopio säännöllisesti – selaimen tietojen tyhjennys poistaa ne.</p>
+      <p class="hint" id="storeHint">Tiedot tallentuvat vain tämän laitteen selaimeen. Ota varmuuskopio säännöllisesti – selaimen tietojen tyhjennys poistaa ne.</p>
     </div>
 
     <div class="card">
@@ -492,10 +515,12 @@
   }
   var data = load();
   function noPriv(k, v) { return k.charAt(0) === '_' ? undefined : v; }
-  function save() {
+  function saveLocal() {
     try { localStorage.setItem(STORE_KEY, JSON.stringify(data, noPriv)); }
     catch (e) { toast('Tallennus epäonnistui: ' + e.message); }
   }
+  // Tallennus laitteelle ja (kirjautuneena) muutokset pilveen.
+  function save() { saveLocal(); pushLocal(); }
   var prefs = (function () { try { return JSON.parse(localStorage.getItem(PREF_KEY)) || {}; } catch (e) { return {}; } })();
   function savePrefs() { try { localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); } catch (e) {} }
 
@@ -669,13 +694,26 @@
     document.querySelectorAll('.view').forEach(function (v) { v.classList.toggle('active', v.id === 'view-' + view); });
     document.querySelectorAll('nav.tabs button').forEach(function (b) { b.classList.toggle('active', b.dataset.view === view); });
     window.scrollTo(0, 0);
-    document.querySelector('nav.tabs button[data-view=add]').classList.toggle('dot', !!data.pending);
-    document.querySelector('nav.tabs button[data-view=drive]').classList.toggle('dot', !!data.pendingDrive);
+    updDots();
     if (view === 'summary') renderSummary();
     if (view === 'list') { renderList(); renderDriveList(); }
     if (view === 'stats') renderStats();
     if (view === 'add' && !$('evId').value) resetForm();
     if (view === 'drive' && !$('drId').value) resetDriveForm();
+  }
+  function updDots() {
+    document.querySelector('nav.tabs button[data-view=add]').classList.toggle('dot', !!data.pending);
+    document.querySelector('nav.tabs button[data-view=drive]').classList.toggle('dot', !!data.pendingDrive);
+  }
+  function currentView() { var v = document.querySelector('.view.active'); return v ? v.id.replace('view-', '') : ''; }
+  // Pilvestä tulleen muutoksen jälkeen piirretään näkyvä näkymä uudelleen (ei vieritystä, ei lomakkeiden nollausta).
+  function refresh() {
+    var v = currentView();
+    updDots();
+    if (v === 'summary') renderSummary();
+    if (v === 'list') { renderList(); renderDriveList(); }
+    if (v === 'stats') renderStats();
+    if (v !== 'car') { fillCar(); fillWeather(); }
   }
   document.querySelectorAll('nav.tabs button').forEach(function (b) { b.addEventListener('click', function () { show(b.dataset.view); }); });
   document.querySelectorAll('[data-goto]').forEach(function (b) { b.addEventListener('click', function () { show(b.dataset.goto); }); });
@@ -1811,12 +1849,275 @@
   }
 
   $('wipe').addEventListener('click', function () {
-    confirmBox('Poistetaanko kaikki auton tiedot ja lataukset pysyvästi? Ota ensin varmuuskopio.').then(function (ok) {
+    confirmBox('Poistetaanko kaikki auton tiedot ja lataukset pysyvästi' + (cloudReady ? ' tästä laitteesta ja pilvestä' : '') + '? Ota ensin varmuuskopio.').then(function (ok) {
       if (!ok) return;
-      try { localStorage.removeItem(STORE_KEY); } catch (e) {}
-      data = emptyData(); fillCar(); fillWeather(); toast('Tiedot poistettu'); show('summary');
+      data = emptyData(); save(); fillCar(); fillWeather(); toast('Tiedot poistettu'); show('summary');
     });
   });
+
+  // ---------- Pilvisynkronointi (Firebase) ----------
+  // Laitteen localStorage on aina ensisijainen tallennus: sovellus toimii ilman verkkoa ja ilman kirjautumista.
+  // Kirjautuneena muutokset kirjoitetaan Firestoreen (users/{uid}/events|drives/{id} ja users/{uid}/meta/state).
+  // `base` muistaa, mikä versio kustakin merkinnästä on viimeksi synkronoitu, jotta vain muutokset lähetetään
+  // ja toisilla laitteilla tehdyt muutokset ja poistot osataan tuoda tähän laitteeseen.
+  // Firebase ladataan vasta kirjautuessa: ilman kirjautumista sovellus ei ota yhteyttä Googleen.
+  var FB_CONFIG = {
+    apiKey: 'AIzaSyARAKnSzEke7wVQtie-Po2cogklHzHb0dA',
+    authDomain: 'akun-kapasiteetti.firebaseapp.com',
+    projectId: 'akun-kapasiteetti',
+    storageBucket: 'akun-kapasiteetti.firebasestorage.app',
+    messagingSenderId: '376440992886',
+    appId: '1:376440992886:web:3c9e0fe4aa984e62525b57'
+  };
+  var FB_URL = 'https://www.gstatic.com/firebasejs/10.14.1/';
+  var FB_APP_NAME = 'akkukapasiteetti'; // nimetty sovellus: ei törmää saman originin muihin Firebase-sovelluksiin
+  var SYNC_KEY = 'akkukapasiteetti-sync-v1';
+  var fb = null, fbLoading = null, user = null, unsubs = [], cloudReady = false, inflight = 0, syncErr = '';
+  var base = (function () { try { var b = JSON.parse(localStorage.getItem(SYNC_KEY)); if (b && b.uid && b.ev && b.dr) return b; } catch (e) {} return null; })();
+  function saveBase() { try { if (base) localStorage.setItem(SYNC_KEY, JSON.stringify(base)); else localStorage.removeItem(SYNC_KEY); } catch (e) {} }
+
+  function clean(o) { return JSON.parse(JSON.stringify(o, noPriv)); }
+  // Avainjärjestyksestä riippumaton merkkijono vertailuun.
+  function canon(v) {
+    if (Array.isArray(v)) return '[' + v.map(canon).join(',') + ']';
+    if (v && typeof v === 'object') return '{' + Object.keys(v).sort().filter(function (k) { return v[k] !== undefined; }).map(function (k) { return JSON.stringify(k) + ':' + canon(v[k]); }).join(',') + '}';
+    return JSON.stringify(v === undefined ? null : v);
+  }
+  function metaOf(d) { return clean({ car: d.car, pending: d.pending || null, pendingDrive: d.pendingDrive || null, weather: d.weather || null }); }
+  function applyMeta(o) {
+    if (o.car) data.car = o.car;
+    if (o.pending) data.pending = o.pending; else delete data.pending;
+    if (o.pendingDrive) data.pendingDrive = o.pendingDrive; else delete data.pendingDrive;
+    if (o.weather) data.weather = o.weather; else delete data.weather;
+  }
+  var COLLS = [{ name: 'events', b: 'ev', get: function () { return data.events; }, set: function (a) { data.events = a; } },
+               { name: 'drives', b: 'dr', get: function () { return drives(); }, set: function (a) { data.drives = a; } }];
+  function userPath(p) { return 'users/' + user.uid + (p ? '/' + p : ''); }
+
+  function loadFb() {
+    if (fbLoading) return fbLoading;
+    fbLoading = Promise.all([import(FB_URL + 'firebase-app.js'), import(FB_URL + 'firebase-auth.js'), import(FB_URL + 'firebase-firestore.js')]).then(function (mods) {
+      var m = Object.assign({}, mods[0], mods[1], mods[2]);
+      var app = m.getApps().filter(function (a) { return a.name === FB_APP_NAME; })[0] || m.initializeApp(FB_CONFIG, FB_APP_NAME);
+      var auth = m.getAuth(app); auth.languageCode = 'fi';
+      var db = m.initializeFirestore(app, { localCache: m.persistentLocalCache({ tabManager: m.persistentMultipleTabManager() }) });
+      fb = { m: m, app: app, auth: auth, db: db };
+      m.onAuthStateChanged(auth, onAuth);
+      return fb;
+    });
+    fbLoading.catch(function () { fbLoading = null; setSync(); });
+    return fbLoading;
+  }
+  // Kirjoitukset enintään 400 operaation erissä (Firestoren rajoitus 500).
+  function commitOps(ops) {
+    var ps = [];
+    for (var i = 0; i < ops.length; i += 400) {
+      var b = fb.m.writeBatch(fb.db);
+      ops.slice(i, i + 400).forEach(function (f) { f(b); });
+      ps.push(b.commit());
+    }
+    return Promise.all(ps);
+  }
+
+  // Lähettää laitteen muutokset (lisäykset, muokkaukset, poistot) pilveen.
+  function pushLocal() {
+    if (!cloudReady) return;
+    var m = fb.m, ops = [];
+    COLLS.forEach(function (c) {
+      var seen = {}, bm = base[c.b];
+      c.get().forEach(function (it) {
+        if (!it.id) it.id = uid();
+        var o = clean(it), j = canon(o); seen[it.id] = 1;
+        if (bm[it.id] !== j) { bm[it.id] = j; ops.push(function (b) { b.set(m.doc(fb.db, userPath(c.name + '/' + o.id)), o); }); }
+      });
+      Object.keys(bm).forEach(function (id) {
+        if (!seen[id]) { delete bm[id]; ops.push(function (b) { b.delete(m.doc(fb.db, userPath(c.name + '/' + id))); }); }
+      });
+    });
+    var mo = metaOf(data), mj = canon(mo);
+    if (base.meta !== mj) { base.meta = mj; ops.push(function (b) { b.set(m.doc(fb.db, userPath('meta/state')), mo); }); }
+    if (!ops.length) return;
+    saveBase();
+    inflight++; syncErr = ''; setSync();
+    // Offline-tilassa kirjoitukset jäävät Firestoren paikalliseen jonoon ja lähtevät, kun yhteys palaa.
+    commitOps(ops).then(function () { inflight--; setSync(); }, function (e) { inflight--; syncErr = e.code || e.message; setSync(); toast('Pilvitallennus epäonnistui: ' + syncErr); });
+  }
+
+  // Pilven tila on totuus synkronoiduille merkinnöille: muuttuneet päivitetään, puuttuvat poistetaan laitteelta.
+  function onColl(c, snap) {
+    var bm = base[c.b], arr = c.get(), byId = {}, inCloud = {}, changed = false;
+    arr.forEach(function (x, i) { byId[x.id] = i; });
+    snap.docs.forEach(function (d) {
+      var o = d.data(), j = canon(o); inCloud[d.id] = 1;
+      if (bm[d.id] === j) return;
+      o.id = d.id; bm[d.id] = j; changed = true;
+      if (byId[d.id] !== undefined) arr[byId[d.id]] = o; else arr.push(o);
+    });
+    // Poistot vain palvelimen vahvistamasta tilasta (tyhjä paikallinen välimuisti ei saa tyhjentää laitetta).
+    var gone = snap.metadata.fromCache ? [] : Object.keys(bm).filter(function (id) { return !inCloud[id]; });
+    if (gone.length) {
+      gone.forEach(function (id) { delete bm[id]; });
+      c.set(arr.filter(function (x) { return gone.indexOf(x.id) < 0; }));
+      changed = true;
+    }
+    if (changed) remoteChanged();
+  }
+  function onMeta(snap) {
+    if (!snap.exists()) return;
+    var o = snap.data(), j = canon(o);
+    if (base.meta === j) return;
+    base.meta = j; applyMeta(o); remoteChanged();
+  }
+  function remoteChanged() { saveLocal(); saveBase(); refresh(); }
+  function onSnapErr(e) { syncErr = e.code || e.message; setSync(); }
+  function listen() {
+    var m = fb.m;
+    COLLS.forEach(function (c) {
+      unsubs.push(m.onSnapshot(m.collection(fb.db, userPath(c.name)), { includeMetadataChanges: true }, function (s) { onColl(c, s); }, onSnapErr));
+    });
+    unsubs.push(m.onSnapshot(m.doc(fb.db, userPath('meta/state')), onMeta, onSnapErr));
+  }
+  function stopListen() { unsubs.forEach(function (u) { try { u(); } catch (e) {} }); unsubs = []; cloudReady = false; }
+
+  function evKey(e) { return e.date + '|' + e.km + '|' + e.socBefore + '|' + e.socAfter + '|' + e.kwh; }
+  function drKey(d) { return d.date + '|' + d.odo + '|' + d.socStart + '|' + d.socEnd + '|' + d.dist; }
+  function startCloud() {
+    syncErr = ''; setSync();
+    if (base && base.uid === user.uid) { cloudReady = true; pushLocal(); listen(); renderAcct(); return; }
+    // Ensimmäinen kirjautuminen tällä laitteella: yhdistetään laitteen ja pilven tiedot.
+    var m = fb.m, me = user;
+    Promise.all([m.getDocsFromServer(m.collection(fb.db, userPath('events'))), m.getDocsFromServer(m.collection(fb.db, userPath('drives'))), m.getDocFromServer(m.doc(fb.db, userPath('meta/state')))]).then(function (r) {
+      if (user !== me) return;
+      var cEv = r[0].docs, cDr = r[1].docs, cMeta = r[2].exists() ? r[2].data() : null;
+      var cloudEmpty = !cEv.length && !cDr.length && !cMeta;
+      var evKeys = {}, drKeys = {}, ids = {};
+      cEv.forEach(function (d) { evKeys[evKey(d.data())] = 1; ids[d.id] = 1; });
+      cDr.forEach(function (d) { drKeys[drKey(d.data())] = 1; ids[d.id] = 1; });
+      var extraEv = data.events.filter(function (e) { return !ids[e.id] && !evKeys[evKey(e)]; });
+      var extraDr = drives().filter(function (d) { return !ids[d.id] && !drKeys[drKey(d)]; });
+      var ask = !cloudEmpty && (extraEv.length || extraDr.length)
+        ? confirmBox('Pilvessä on jo tietoja (' + cEv.length + ' latausta, ' + cDr.length + ' ajoa). Tässä laitteessa on lisäksi ' + extraEv.length + ' latausta ja ' + extraDr.length + ' ajoa, joita pilvessä ei ole. Lisätäänkö ne pilveen? Peruuta = käytetään vain pilven tietoja.')
+        : Promise.resolve(true);
+      return ask.then(function (merge) {
+        if (user !== me) return;
+        base = { uid: me.uid, ev: {}, dr: {}, meta: null };
+        if (!cloudEmpty) {
+          data.events = cEv.map(function (d) { var o = d.data(); base.ev[d.id] = canon(o); o.id = d.id; return o; }).concat(merge ? extraEv : []);
+          data.drives = cDr.map(function (d) { var o = d.data(); base.dr[d.id] = canon(o); o.id = d.id; return o; }).concat(merge ? extraDr : []);
+          if (cMeta) { base.meta = canon(cMeta); applyMeta(cMeta); }
+        }
+        saveLocal(); saveBase();
+        cloudReady = true; pushLocal(); listen();
+        refresh(); fillCar(); fillWeather(); renderAcct();
+        toast(cloudEmpty ? 'Tiedot tallennetaan nyt myös pilveen' : 'Pilven tiedot haettu');
+      });
+    }).catch(function (e) {
+      syncErr = e.code === 'unavailable' ? 'Ensimmäinen synkronointi vaatii verkkoyhteyden' : (e.code || e.message);
+      setSync();
+    });
+  }
+  function onAuth(u) {
+    stopListen();
+    user = u || null;
+    if (user) startCloud();
+    renderAcct();
+  }
+  // Firestoren paikallinen välimuisti ja Firebase-sovellus pois tältä laitteelta.
+  function teardownFb() {
+    var f = fb; fb = null; fbLoading = null; user = null; stopListen();
+    if (!f) return Promise.resolve();
+    return f.m.terminate(f.db).then(function () { return f.m.clearIndexedDbPersistence(f.db); }).catch(function () {})
+      .then(function () { return f.m.deleteApp(f.app); }).catch(function () {});
+  }
+  function withTimeout(p, ms) { return Promise.race([p, new Promise(function (_, rej) { setTimeout(function () { rej(new Error('aikakatkaisu')); }, ms); })]); }
+
+  function signIn() {
+    var wasLoaded = !!fb;
+    loadFb().then(function (f) {
+      return f.m.signInWithPopup(f.auth, new f.m.GoogleAuthProvider());
+    }).catch(function (e) {
+      var c = e && e.code;
+      if (c === 'auth/popup-closed-by-user' || c === 'auth/cancelled-popup-request' || c === 'auth/user-cancelled') return;
+      if (c === 'auth/popup-blocked' && !wasLoaded) return toast('Paina Kirjaudu Googlella uudelleen');
+      toast(fb ? 'Kirjautuminen epäonnistui: ' + (c || e.message) : 'Kirjautuminen vaatii verkkoyhteyden');
+    });
+  }
+  function signOutFlow() {
+    if (!fb || !user) return;
+    confirmBox('Kirjaudutaanko ulos? Tiedot säilyvät pilvessä, ja ne poistetaan tästä laitteesta.').then(function (ok) {
+      if (!ok) return;
+      if (!navigator.onLine && inflight) return toast('Kaikki muutokset eivät ole vielä pilvessä. Kirjaudu ulos, kun verkkoyhteys on.');
+      var f = fb;
+      withTimeout(f.m.waitForPendingWrites(f.db), 10000).then(function () {
+        stopListen();
+        return f.m.signOut(f.auth);
+      }).then(function () {
+        return teardownFb();
+      }).then(function () {
+        base = null; saveBase(); data = emptyData(); saveLocal(); inflight = 0; syncErr = '';
+        fillCar(); fillWeather(); renderAcct(); show('summary'); toast('Kirjauduttu ulos');
+      }).catch(function (e) { toast('Uloskirjautuminen epäonnistui: ' + e.message); });
+    });
+  }
+  function deleteAccountFlow() {
+    if (!fb || !user) return;
+    confirmBox('Poistetaanko kirjautumistili ja kaikki pilveen tallennetut tiedot pysyvästi? Tämän laitteen tiedot säilyvät (voit poistaa ne erikseen).').then(function (ok) {
+      if (!ok) return;
+      if (!navigator.onLine) return toast('Tilin poisto vaatii verkkoyhteyden');
+      var f = fb, m = f.m, me = user;
+      stopListen();
+      Promise.all([m.getDocsFromServer(m.collection(f.db, userPath('events'))), m.getDocsFromServer(m.collection(f.db, userPath('drives')))]).then(function (r) {
+        var refs = r[0].docs.concat(r[1].docs).map(function (d) { return d.ref; }).concat([m.doc(f.db, userPath('meta/state'))]);
+        return commitOps(refs.map(function (ref) { return function (b) { b.delete(ref); }; }));
+      }).then(function () {
+        return m.deleteUser(me).catch(function (e) {
+          if (e.code !== 'auth/requires-recent-login') throw e;
+          return m.reauthenticateWithPopup(me, new m.GoogleAuthProvider()).then(function () { return m.deleteUser(me); });
+        });
+      }).then(function () {
+        base = null; saveBase();
+        return teardownFb();
+      }).then(function () {
+        inflight = 0; syncErr = ''; renderAcct(); toast('Tili ja pilvitiedot poistettu');
+      }).catch(function (e) {
+        // Pilvitiedot voivat olla jo poistettu: laitteen tiedot ladataan seuraavaksi uudelleen pilveen.
+        base = null; saveBase();
+        toast('Tilin poisto epäonnistui: ' + (e.code || e.message));
+        if (user) startCloud();
+      });
+    });
+  }
+
+  function setSync() {
+    var b = $('cloudBtn'), s = $('syncState');
+    var state = !user ? (base ? 'Kirjaudu uudelleen jatkaaksesi synkronointia' : '')
+      : syncErr ? 'Synkronointivirhe: ' + syncErr
+      : !cloudReady ? 'Yhdistetään…'
+      : inflight ? (navigator.onLine ? 'Tallennetaan pilveen…' : 'Ei verkkoyhteyttä – muutokset lähetetään, kun yhteys palaa')
+      : 'Synkronoitu';
+    var cls = !user ? 'wait' : syncErr ? 'err' : (!cloudReady || inflight) ? 'wait' : 'ok';
+    b.style.display = (user || base) ? 'inline-flex' : 'none';
+    b.className = 'btn small ' + cls; b.title = state || 'Pilvitallennus';
+    s.textContent = state;
+  }
+  function renderAcct() {
+    $('acctOut').hidden = !!user; $('acctIn').hidden = !user;
+    $('acctEmail').textContent = user ? (user.email || user.displayName || '') : '';
+    $('storeHint').textContent = user
+      ? 'Tiedot tallentuvat tähän laitteeseen ja pilveen, ja ne ovat käytössä kaikilla laitteilla, joilla kirjaudut samalla tilillä.'
+      : 'Tiedot tallentuvat vain tämän laitteen selaimeen. Ota varmuuskopio säännöllisesti – selaimen tietojen tyhjennys poistaa ne.';
+    setSync();
+  }
+  $('signInBtn').addEventListener('click', signIn);
+  $('signOutBtn').addEventListener('click', signOutFlow);
+  $('delAcctBtn').addEventListener('click', deleteAccountFlow);
+  $('cloudBtn').addEventListener('click', function () { show('car'); });
+  window.addEventListener('online', function () {
+    setSync();
+    if (base && !fb) loadFb().catch(function () {});
+    else if (user && !cloudReady) startCloud();
+  });
+  window.addEventListener('offline', setSync);
 
   // ---------- Asennus ----------
   function updateInstall() { $('installBtn').style.display = window.__installPrompt ? 'inline-flex' : 'none'; }
@@ -1832,6 +2133,8 @@
   // ---------- Käynnistys ----------
   fillCar(); fillWeather();
   show(data.car.capacityNew ? 'summary' : 'car');
+  renderAcct();
+  if (base) loadFb().catch(function () {}); // aiemmin kirjautunut: jatketaan synkronointia
 })();
 </script>
 </body>
