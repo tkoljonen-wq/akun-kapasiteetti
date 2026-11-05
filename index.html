@@ -393,7 +393,7 @@
     <div class="card" id="acctCard">
       <h2>Pilvitallennus</h2>
       <div id="acctOut">
-        <p class="hint" style="margin:0">Kirjaudu Google-tilillä, niin tiedot tallentuvat myös pilveen ja ovat käytössä kaikilla laitteillasi. Ilman kirjautumista tiedot ovat vain tässä laitteessa.</p>
+        <p class="hint" style="margin:0">Kirjaudu Google-tilillä, niin tiedot tallentuvat myös pilveen ja ovat käytössä kaikilla laitteillasi. Pilvitallennus on käytössä vain sovelluksen omistajan tilillä. Ilman kirjautumista tiedot ovat vain tässä laitteessa.</p>
         <button class="btn primary block" type="button" id="signInBtn">Kirjaudu Googlella</button>
       </div>
       <div id="acctIn" hidden>
@@ -1872,6 +1872,7 @@
   var FB_URL = 'https://www.gstatic.com/firebasejs/10.14.1/';
   var FB_APP_NAME = 'akkukapasiteetti'; // nimetty sovellus: ei törmää saman originin muihin Firebase-sovelluksiin
   var SYNC_KEY = 'akkukapasiteetti-sync-v1';
+  var ALLOWED_EMAIL = 'tkoljonen@gmail.com';
   var fb = null, fbLoading = null, user = null, unsubs = [], cloudReady = false, inflight = 0, syncErr = '';
   var base = (function () { try { var b = JSON.parse(localStorage.getItem(SYNC_KEY)); if (b && b.uid && b.ev && b.dr) return b; } catch (e) {} return null; })();
   function saveBase() { try { if (base) localStorage.setItem(SYNC_KEY, JSON.stringify(base)); else localStorage.removeItem(SYNC_KEY); } catch (e) {} }
@@ -2018,6 +2019,15 @@
   }
   function onAuth(u) {
     stopListen();
+    if (u && (u.email || '').toLowerCase() !== ALLOWED_EMAIL) {
+      // Vain sallittu tili: muut kirjataan heti ulos ja niiden juuri luotu tunnus poistetaan.
+      // (Varsinainen suojaus on Firestoren säännöissä, jotka sallivat vain tämän osoitteen.)
+      var f = fb;
+      f.m.deleteUser(u).catch(function () { return f.m.signOut(f.auth); });
+      user = null; renderAcct();
+      toast('Tilillä ' + (u.email || '') + ' ei ole käyttöoikeutta');
+      return;
+    }
     user = u || null;
     if (user) startCloud();
     renderAcct();
@@ -2034,7 +2044,9 @@
   function signIn() {
     var wasLoaded = !!fb;
     loadFb().then(function (f) {
-      return f.m.signInWithPopup(f.auth, new f.m.GoogleAuthProvider());
+      var p = new f.m.GoogleAuthProvider();
+      p.setCustomParameters({ prompt: 'select_account', login_hint: ALLOWED_EMAIL });
+      return f.m.signInWithPopup(f.auth, p);
     }).catch(function (e) {
       var c = e && e.code;
       if (c === 'auth/popup-closed-by-user' || c === 'auth/cancelled-popup-request' || c === 'auth/user-cancelled') return;
