@@ -129,6 +129,11 @@
   .inline { display: flex; gap: 8px; }
   .inline input { flex: 1; min-width: 0; }
   .inline .btn { flex: 0 0 auto; }
+  /* Km-lukema Polestar-palvelusta: kapea nappi kentän vieressä (myös puolilevyisissä kentissä) */
+  .inline .btn.srv { padding: 8px 10px; background: var(--accent2); color: #04202c; }
+  .srvinfo { color: var(--text); opacity: .85; }
+  .srvinfo.warn { color: var(--warn); opacity: 1; }
+  input.key { font-family: ui-monospace, Consolas, monospace; font-size: 15px; }
   .card.pending { border: 1px solid var(--accent); }
   nav.tabs button { position: relative; }
   nav.tabs button.dot::after { content: ''; position: absolute; top: 8px; left: calc(50% + 10px); width: 9px; height: 9px; border-radius: 50%; background: var(--warn); }
@@ -419,6 +424,19 @@
         </div>
       </div>
       <p class="hint">Pilvitiedot tallennetaan Googlen Firebase-palveluun EU:ssa (Suomi, europe-north1), ja vain sinä pääset niihin omalla tililläsi. Sijaintia ei tallenneta. Ilman kirjautumista sovellus ei ota yhteyttä Googleen.</p>
+    </div>
+
+    <div class="card" id="srvCard">
+      <h2>Km-lukema autosta</h2>
+      <p class="hint" style="margin:0">Polestar-palvelun avaimella km-kenttien viereen tulee ☁ Hae -nappi, joka hakee auton viimeisimmän matkamittarin lukeman. Lukeman voi aina syöttää myös käsin. Avain tallentuu vain tähän laitteeseen – ei pilveen eikä varmuuskopioon.</p>
+      <label for="srvKey">Polestar-palvelun avain</label>
+      <input type="password" class="key" id="srvKey" autocomplete="off" spellcheck="false" placeholder="ps_…">
+      <div class="btns" style="margin-top:12px">
+        <button class="btn" type="button" id="srvSave">Tallenna avain</button>
+        <button class="btn" type="button" id="srvTest">Testaa yhteys</button>
+        <button class="btn danger" type="button" id="srvRemove">Poista avain</button>
+      </div>
+      <p class="hint" id="srvStatus"></p>
     </div>
 
     <form class="card" id="carForm" autocomplete="off">
@@ -2235,6 +2253,142 @@
     p.userChoice.finally(function () { window.__installPrompt = null; updateInstall(); });
   });
   updateInstall();
+
+  // ---------- Km-lukema Polestar-palvelusta ----------
+  // Oma välityspalvelu (C:\ohjelmat\Polestar-palvelu, Cloudflare) kerää auton tiedot
+  // Polestarin rajapinnasta. Avain (oikeudet akku, km) on vain tämän laitteen
+  // localStoragessa omalla nimellään: ei prefsissä, pilvessä eikä varmuuskopiossa.
+  // Osoitteen voi vaihtaa testiä varten avaimella SRV_URL_KEY (ei käyttöliittymää).
+  var SRV_KEY = 'akkukapasiteetti-polestar-avain';
+  var SRV_URL_KEY = 'akkukapasiteetti-polestar-url';
+  var SRV_DEFAULT = 'https://polestar-palvelu.tkoljonen.workers.dev';
+  var SRV_STALE_MIN = 15; // vanhempi lukema → kehotus tarkistaa mittarista
+  var SRV_FIELDS = ['odKm', 'drOdo', 'drOdoEnd', 'evKm'];
+
+  function srvKey() { try { return localStorage.getItem(SRV_KEY) || ''; } catch (e) { return ''; } }
+  function srvUrl() {
+    try { return (localStorage.getItem(SRV_URL_KEY) || SRV_DEFAULT).replace(/\/+$/, ''); }
+    catch (e) { return SRV_DEFAULT; }
+  }
+
+  // Auton viimeisin km-lukema. paivita=1: palvelu hakee tuoreimman tiedon suoraan
+  // Polestarilta (enintään kerran minuutissa). Mittaristo näyttää kokonaiset km katkaistuina.
+  function fetchServerKm() {
+    var key = srvKey();
+    if (!key) return Promise.reject(new Error('Palvelun avain puuttuu (Asetukset).'));
+    var ctrl = new AbortController();
+    var timer = setTimeout(function () { ctrl.abort(); }, 20000);
+    return fetch(srvUrl() + '/v1/nyt?paivita=1', { headers: { Authorization: 'Bearer ' + key }, cache: 'no-store', signal: ctrl.signal })
+      .catch(function () { throw new Error(navigator.onLine === false ? 'Ei verkkoyhteyttä.' : 'Palvelimeen ei saatu yhteyttä.'); })
+      .then(function (res) {
+        clearTimeout(timer);
+        return res.json().catch(function () { return null; }).then(function (d) {
+          var msg = d && typeof d.virhe === 'string' ? d.virhe : '';
+          if (res.status === 401 || res.status === 403) throw new Error('Avain ei kelpaa' + (msg ? ': ' + msg : '.'));
+          if (!res.ok) throw new Error('Palvelin vastasi ' + res.status + (msg ? ': ' + msg : ''));
+          var k = d && d.km;
+          if (!k || typeof k.km !== 'number' || !isFinite(k.km)) throw new Error('Palvelimella ei ole vielä km-lukemaa.');
+          var at = typeof k.aika === 'number' ? k.aika * 1000 : (Date.parse(k.aika_iso) || null);
+          return { km: Math.floor(k.km), at: at };
+        });
+      }, function (e) { clearTimeout(timer); throw e; });
+  }
+
+  function srvAge(at) {
+    if (!at) return 'ajankohta tuntematon';
+    var min = Math.round((Date.now() - at) / 60000);
+    if (min < 1) return 'juuri nyt';
+    if (min < 60) return min + ' min sitten';
+    var d = new Date(at);
+    return fmtWhen(dateStr(d), String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'));
+  }
+
+  // Jokaisen km-kentän viereen ☁ Hae -nappi ja kentän alle tietorivi.
+  SRV_FIELDS.forEach(function (id) {
+    var inp = $(id);
+    var wrap = document.createElement('div');
+    wrap.className = 'inline';
+    inp.parentNode.insertBefore(wrap, inp);
+    wrap.appendChild(inp);
+    var b = document.createElement('button');
+    b.type = 'button'; b.className = 'btn srv'; b.textContent = '☁ Hae';
+    b.title = 'Hae palvelimelta'; b.setAttribute('aria-label', 'Hae km-lukema palvelimelta');
+    wrap.appendChild(b);
+    var info = document.createElement('p');
+    info.className = 'hint srvinfo'; info.id = id + 'Srv'; info.hidden = true;
+    wrap.parentNode.insertBefore(info, wrap.nextSibling);
+    b.addEventListener('click', function () { srvFill(id, b); });
+    // Käsin muutettu arvo: palvelimen tieto ei enää koske kenttää
+    inp.addEventListener('input', function () { if (inp.dataset.srv && inp.value !== inp.dataset.srv) srvClear(id); });
+  });
+
+  function srvClear(id) { delete $(id).dataset.srv; $(id + 'Srv').hidden = true; }
+
+  function srvFill(id, b) {
+    var inp = $(id), info = $(id + 'Srv');
+    b.disabled = true; b.textContent = '…';
+    fetchServerKm().then(function (r) {
+      inp.value = String(r.km);
+      inp.dataset.srv = String(r.km);
+      // Erillinen lukema: päiväksi lukeman päivä (auto lähettää lukeman käytön jälkeen)
+      if (id === 'odKm' && r.at && !$('odId').value) $('odDate').value = dateStr(new Date(r.at));
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+      var stale = r.at && Date.now() - r.at > SRV_STALE_MIN * 60000;
+      var startKm = num($('drOdo').value);
+      var same = id === 'drOdoEnd' && isFinite(startKm) && r.km <= startKm;
+      var txt = '☁ ' + fmt(r.km, 0) + ' km, ' + srvAge(r.at) + '.';
+      if (same) txt += ' Ei muuttunut ajon alusta – auto lähettää lukeman muutaman minuutin kuluessa pysäköinnistä. Yritä hetken päästä tai syötä käsin.';
+      else if (stale && id !== 'odKm') txt += ' Auto ei ole lähettänyt uudempaa – tarkista mittarista.';
+      info.textContent = txt;
+      info.classList.toggle('warn', !!same || (!!stale && id !== 'odKm'));
+      info.hidden = false;
+    }).catch(function (e) {
+      info.textContent = '⚠️ ' + e.message + ' Syötä lukema käsin.';
+      info.classList.add('warn');
+      info.hidden = false;
+    }).then(function () { b.disabled = false; b.textContent = '☁ Hae'; });
+  }
+
+  // Lomakkeen tallennus/peruutus tyhjentää kentät → tietorivi pois, jos arvo vaihtui
+  ['odForm', 'drForm', 'evForm'].forEach(function (f) {
+    $(f).addEventListener('click', function (e) {
+      if (!e.target.closest('.btn.block')) return;
+      setTimeout(function () {
+        SRV_FIELDS.forEach(function (id) { if ($(id).dataset.srv && $(id).value !== $(id).dataset.srv) srvClear(id); });
+      }, 0);
+    });
+  });
+
+  function updateSrvUi() {
+    var on = !!srvKey();
+    document.querySelectorAll('.btn.srv').forEach(function (b) { b.hidden = !on; });
+    $('srvTest').hidden = !on; $('srvRemove').hidden = !on;
+    if (!on) SRV_FIELDS.forEach(srvClear);
+  }
+  $('srvSave').addEventListener('click', function () {
+    var v = $('srvKey').value.trim();
+    if (!/^ps_[A-Za-z0-9_-]{20,}$/.test(v)) { $('srvStatus').textContent = '⚠️ Avain alkaa ps_ ja on pitkä merkkijono.'; return; }
+    try { localStorage.setItem(SRV_KEY, v); } catch (e) { return toast('Tallennus epäonnistui'); }
+    $('srvKey').value = '';
+    $('srvStatus').textContent = 'Avain tallennettu. Testaa yhteys.';
+    updateSrvUi();
+  });
+  $('srvTest').addEventListener('click', function () {
+    $('srvStatus').textContent = 'Testataan…';
+    fetchServerKm().then(function (r) {
+      $('srvStatus').textContent = '✓ Yhteys toimii: ' + fmt(r.km, 0) + ' km (' + srvAge(r.at) + ').';
+    }).catch(function (e) { $('srvStatus').textContent = '⚠️ ' + e.message; });
+  });
+  $('srvRemove').addEventListener('click', function () {
+    confirmBox('Poistetaanko palvelun avain tästä laitteesta?').then(function (ok) {
+      if (!ok) return;
+      try { localStorage.removeItem(SRV_KEY); } catch (e) {}
+      $('srvStatus').textContent = 'Avain poistettu.';
+      updateSrvUi();
+    });
+  });
+  updateSrvUi();
+  $('srvStatus').textContent = srvKey() ? 'Avain on tallennettu.' : '';
 
   // ---------- Käynnistys ----------
   fillCar(); fillWeather();
